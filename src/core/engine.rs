@@ -1,7 +1,7 @@
 use crate::analyzer::bound::*;
 use crate::sql::ast::{Expression, Operator, Value};
-use crate::storage::table::Column;
-use crate::types::QueryResult;
+use crate::storage::table::{Column, deserialize_row, serialize_row};
+use crate::types::{Cursor, QueryResult};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -106,14 +106,9 @@ pub fn execute_insert(stmt: &BoundInsertStatement) -> Result<u64, EngineError> {
     let mut all_values = vec![Value::Number(rowid as f64)];
     all_values.extend(stmt.values.iter().cloned());
 
-    let mut pager = table.pager.borrow_mut();
-    let page = pager.get_page(rowid / table.rows_per_page);
-    let row_offset = (rowid % table.rows_per_page) * table.row_size;
-    crate::storage::table::serialize_row(
-        &all_values,
-        table.columns.values().collect(),
-        &mut page.data[row_offset..row_offset + table.row_size],
-    );
+    table
+        .end()
+        .with_row(|slot| serialize_row(&all_values, table.columns.values().collect(), slot));
     table.rows.set(rowid + 1);
     Ok(1)
 }
@@ -131,18 +126,14 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, En
         .collect();
 
     let mut results = vec![];
-    let mut pager = table.pager.borrow_mut();
 
-    for row_idx in 0..table.rows.get() {
-        let page = pager.get_page(row_idx / table.rows_per_page);
-        let row_offset = (row_idx % table.rows_per_page) * table.row_size;
-        let all_values = crate::storage::table::deserialize_row(
-            &cols,
-            &page.data[row_offset..row_offset + table.row_size],
-        );
+    let mut cursor = table.start();
+    while !cursor.eot {
+        let values = cursor.with_row(|slot| deserialize_row(&cols, slot));
+        cursor.advance();
 
         // Build context for eval
-        let row: HashMap<&str, Value> = col_names.iter().copied().zip(all_values.clone()).collect();
+        let row: HashMap<&str, Value> = col_names.iter().copied().zip(values.clone()).collect();
 
         // skip non-matching rows (expr is a WHERE clause here)
         if let Some(expr) = &stmt.expr {
@@ -160,7 +151,7 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, En
         // Project only requested columns by index
         let projected: Vec<Value> = projection_indices
             .iter()
-            .map(|&i| all_values[i].clone())
+            .map(|&i| values[i].clone())
             .collect();
         results.push(projected);
     }

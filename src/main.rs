@@ -37,13 +37,15 @@ fn main() {
         &mydb,
         "INSERT (1, 25, \"alice\", \"alice@example.com\") INTO MyTable",
     );
+    println!("{:?}", result);
     let result = run_query(
         &mydb,
         "INSERT (1, 16, \"bob\", \"alice@example.com\") INTO MyTable",
     );
+    println!("{:?}", result);
     let result = run_query(
         &mydb,
-        "SELECT id, age, username FROM MyTable where age >= 18",
+        "SELECT _rowid, id, age, username FROM MyTable where age >= 18",
     );
     println!("{:?}", result);
 }

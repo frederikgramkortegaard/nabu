@@ -1,5 +1,6 @@
 use super::pager::{PAGE_SIZE, Pager};
 use crate::sql::ast::{Type, Value};
+use crate::types::Cursor;
 use indexmap::IndexMap;
 use std::cell::{Cell, RefCell};
 
@@ -175,6 +176,21 @@ impl Table {
 
     pub fn get_column(&self, column_name: &str) -> Option<&Column> {
         self.columns.get(column_name)
+    }
+
+    pub fn start<'a>(&'a self) -> Cursor<'a> {
+        Cursor {
+            table: self,
+            row: 0,
+            eot: self.rows.get() == 0,
+        }
+    }
+    pub fn end<'a>(&'a self) -> Cursor<'a> {
+        Cursor {
+            table: self,
+            row: self.rows.get(),
+            eot: true,
+        }
     }
 
     fn from_columns(name: String, user_columns: IndexMap<String, Column>) -> Self {
