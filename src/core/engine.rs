@@ -123,7 +123,7 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, En
     let cols: Vec<&Column> = table.columns.values().collect();
     let col_names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
 
-    // Pre-compute indices for projection (once, not per row)
+    // Pre-compute indices for projection
     let projection_indices: Vec<usize> = stmt
         .columns
         .iter()
@@ -144,7 +144,7 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, En
         // Build context for eval
         let row: HashMap<&str, Value> = col_names.iter().copied().zip(all_values.clone()).collect();
 
-        // WHERE filter - skip non-matching rows
+        // skip non-matching rows (expr is a WHERE clause here)
         if let Some(expr) = &stmt.expr {
             match eval_expr(expr, &row)? {
                 Value::Bool(true) => {}
