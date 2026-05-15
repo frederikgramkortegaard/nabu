@@ -7,6 +7,8 @@ pub enum TokenType {
     Identifier,
     Number,
     String,
+    True,
+    False,
 
     // Operations
     Insert,
@@ -14,12 +16,22 @@ pub enum TokenType {
 
     // ..
     Into,
+    From,
+    Where,
 
     // Delimiters
     LParen,
     RParen,
     Comma,
     Dot,
+
+    // Single-char operators
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Less,
+    Greater,
 
     // Multi-char operators
     Equal,        // ==
@@ -150,6 +162,12 @@ impl LexerContext {
             ')' => TokenType::RParen,
             ',' => TokenType::Comma,
             '.' => TokenType::Dot,
+            '+' => TokenType::Plus,
+            '-' => TokenType::Minus,
+            '*' => TokenType::Star,
+            '/' => TokenType::Slash,
+            '<' => TokenType::Less,
+            '>' => TokenType::Greater,
             _ => return false,
         };
         self.push_token(token_type, c.to_string());
@@ -290,6 +308,8 @@ impl LexerContext {
                     "INSERT" => TokenType::Insert,
                     "SELECT" => TokenType::Select,
                     "INTO" => TokenType::Into,
+                    "FROM" => TokenType::From,
+                    "WHERE" => TokenType::Where,
                     _ => TokenType::Identifier,
                 };
                 lexer.add_token(token_type, lexeme, start_row, start_column);
@@ -306,5 +326,49 @@ impl LexerContext {
 
         lexer.add_token(TokenType::Eof, String::new(), lexer.row, lexer.column);
         Ok(lexer.tokens)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lex_insert_keyword() {
+        let tokens = LexerContext::lex("INSERT").unwrap();
+        assert_eq!(tokens[0].tag, TokenType::Insert);
+    }
+
+    #[test]
+    fn test_lex_number() {
+        let tokens = LexerContext::lex("123.45").unwrap();
+        assert_eq!(tokens[0].tag, TokenType::Number);
+        assert_eq!(tokens[0].lexeme, "123.45");
+    }
+
+    #[test]
+    fn test_lex_string() {
+        let tokens = LexerContext::lex("\"hello\"").unwrap();
+        assert_eq!(tokens[0].tag, TokenType::String);
+        assert_eq!(tokens[0].lexeme, "hello");
+    }
+
+    #[test]
+    fn test_lex_insert_statement() {
+        let tokens = LexerContext::lex("INSERT (1, \"test\") INTO users").unwrap();
+        assert_eq!(tokens[0].tag, TokenType::Insert);
+        assert_eq!(tokens[1].tag, TokenType::LParen);
+        assert_eq!(tokens[2].tag, TokenType::Number);
+        assert_eq!(tokens[3].tag, TokenType::Comma);
+        assert_eq!(tokens[4].tag, TokenType::String);
+        assert_eq!(tokens[5].tag, TokenType::RParen);
+        assert_eq!(tokens[6].tag, TokenType::Into);
+        assert_eq!(tokens[7].tag, TokenType::Identifier);
+    }
+
+    #[test]
+    fn test_lex_unterminated_string() {
+        let result = LexerContext::lex("\"unterminated");
+        assert!(result.is_err());
     }
 }
