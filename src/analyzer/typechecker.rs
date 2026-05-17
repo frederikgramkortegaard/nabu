@@ -1,9 +1,8 @@
 use crate::analyzer::bound::*;
-use crate::column::ColumnType;
 use crate::error::Error;
 use crate::sql::ast::{Expression, Operator};
 use crate::storage::Table;
-use crate::value::{Type, Value};
+use crate::types::{ColumnType, Type, Value};
 
 fn is_compatible_value(value: &Value, target: ColumnType) -> bool {
     match (value, target) {
@@ -122,7 +121,8 @@ pub fn typecheck(stmt: &BoundStatement) -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::storage::pager::Pager;
-    use crate::storage::{ColumnType, Table};
+    use crate::storage::Table;
+    use crate::types::ColumnType;
     use ordered_float::OrderedFloat;
     use std::cell::RefCell;
     use std::rc::Rc;

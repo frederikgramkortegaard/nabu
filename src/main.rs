@@ -1,19 +1,16 @@
 mod analyzer;
-mod column;
 mod core;
-mod cursor;
 mod error;
-mod node;
+mod magic;
 mod sql;
 mod storage;
 mod types;
-mod value;
 
 use error::Error;
 use sql::lexer::LexerContext;
 use sql::parser::ParserContext;
-use storage::{ColumnType, Database, TableBuilder};
-use types::QueryResult;
+use storage::{Database, TableBuilder};
+use types::{ColumnType, QueryResult};
 
 fn run_query(db: &Database, query: &str) -> Result<QueryResult, Error> {
     let tokens = LexerContext::lex(query)?;

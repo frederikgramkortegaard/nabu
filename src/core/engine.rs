@@ -1,10 +1,8 @@
 use crate::analyzer::bound::*;
-use crate::column::Column;
 use crate::error::Error;
-use crate::node::Node;
 use crate::sql::ast::{Expression, Operator};
-use crate::types::QueryResult;
-use crate::value::{Type, Value};
+use crate::storage::node::Node;
+use crate::types::{Column, QueryResult, Type, Value};
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
 

@@ -1,7 +1,7 @@
+use super::node::Node;
+use super::table::Table;
 use crate::error::Error;
-use crate::node::Node;
-use crate::storage::Table;
-use crate::value::Value;
+use crate::types::Value;
 
 #[derive(Debug)]
 pub struct Cursor<'a> {

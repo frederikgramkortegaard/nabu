@@ -1,4 +1,4 @@
-use crate::value::Type;
+use crate::types::Type;
 
 #[derive(Debug)]
 pub enum Error {
@@ -63,6 +63,8 @@ pub enum Error {
     // Engine
     ColumnNotInRow(String),
     DivisionByZero,
+
+    IncorrectMagic(String),
 }
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {

@@ -1,9 +1,8 @@
+use super::cursor::Cursor;
+use super::node::{HEADER_SIZE, Node};
 use super::pager::{PAGE_SIZE, Pager};
-use crate::column::{Column, ColumnType, deserialize_row, serialize_row};
-use crate::cursor::Cursor;
 use crate::error::Error;
-use crate::node::{HEADER_SIZE, Node};
-use crate::value::Value;
+use crate::types::{Column, ColumnType, Value, deserialize_row, serialize_row};
 use indexmap::IndexMap;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
@@ -72,7 +71,11 @@ pub struct Table {
 }
 
 impl Table {
-    pub fn new(name: String, columns: impl IntoIterator<Item = (String, ColumnType)>, pager: Rc<RefCell<Pager>>) -> Result<Self, Error> {
+    pub fn new(
+        name: String,
+        columns: impl IntoIterator<Item = (String, ColumnType)>,
+        pager: Rc<RefCell<Pager>>,
+    ) -> Result<Self, Error> {
         let columns: IndexMap<String, Column> = columns
             .into_iter()
             .map(|(name, column_type)| (name.clone(), Column::new(name, column_type)))
@@ -255,7 +258,12 @@ impl Table {
         Ok(())
     }
 
-    pub fn insert_into_internal(&self, page_num: usize, split_key: &Value, new_child: usize) -> Result<(), Error> {
+    pub fn insert_into_internal(
+        &self,
+        page_num: usize,
+        split_key: &Value,
+        new_child: usize,
+    ) -> Result<(), Error> {
         let mut node = self.read_node(page_num)?;
         let Node::Internal {
             ref mut keys,
@@ -420,7 +428,11 @@ impl Table {
                         self.insert_into_internal(page_num, &split_key, new_sibling)?;
                         Ok(None)
                     } else {
-                        Ok(Some(self.split_internal_and_insert(page_num, &split_key, new_sibling)?))
+                        Ok(Some(self.split_internal_and_insert(
+                            page_num,
+                            &split_key,
+                            new_sibling,
+                        )?))
                     }
                 } else {
                     Ok(None)
@@ -463,7 +475,12 @@ impl Table {
         Ok(())
     }
 
-    pub fn create_new_root(&self, split_key: &Value, left_child: usize, right_child: usize) -> Result<(), Error> {
+    pub fn create_new_root(
+        &self,
+        split_key: &Value,
+        left_child: usize,
+        right_child: usize,
+    ) -> Result<(), Error> {
         let new_root_page = self.pager.borrow_mut().alloc_page();
 
         let new_root = Node::Internal {
@@ -508,7 +525,13 @@ impl Table {
         Ok(())
     }
 
-    pub fn write_cell(&self, page_num: usize, cell_num: usize, key: &Value, row: &[Value]) -> Result<(), Error> {
+    pub fn write_cell(
+        &self,
+        page_num: usize,
+        cell_num: usize,
+        key: &Value,
+        row: &[Value],
+    ) -> Result<(), Error> {
         let mut pager = self.pager.borrow_mut();
         let page = pager.get_page(page_num)?;
 
@@ -520,7 +543,11 @@ impl Table {
         Ok(())
     }
 
-    fn from_columns(name: String, user_columns: IndexMap<String, Column>, pager: Rc<RefCell<Pager>>) -> Result<Self, Error> {
+    pub fn from_columns(
+        name: String,
+        user_columns: IndexMap<String, Column>,
+        pager: Rc<RefCell<Pager>>,
+    ) -> Result<Self, Error> {
         // Prepend built-in columns
         let mut columns = IndexMap::new();
         columns.insert(

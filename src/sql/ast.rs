@@ -1,4 +1,4 @@
-pub use crate::value::{Type, Value};
+pub use crate::types::{Type, Value};
 
 #[derive(Debug)]
 pub struct InsertStatement {

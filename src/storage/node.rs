@@ -1,6 +1,5 @@
-use crate::column::{Column, deserialize_row, serialize_row};
 use crate::error::Error;
-use crate::value::Value;
+use crate::types::{Column, Value, deserialize_row, serialize_row};
 
 pub const HEADER_SIZE: usize = 12;
 
@@ -317,7 +316,7 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::column::ColumnType;
+    use crate::types::ColumnType;
     use ordered_float::OrderedFloat;
 
     fn num(n: f64) -> Value {

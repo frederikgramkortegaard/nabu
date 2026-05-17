@@ -1,4 +1,4 @@
-use crate::column::{Column, ColumnType};
+use super::column::{Column, ColumnType};
 use ordered_float::OrderedFloat;
 use std::cmp::Ordering;
 

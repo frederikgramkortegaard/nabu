@@ -1,7 +1,7 @@
-use crate::column::Column;
 use crate::error::Error;
 use crate::sql::ast::*;
 use crate::storage::{Database, Table};
+use crate::types::Column;
 #[derive(Debug)]
 pub struct BoundInsertStatement<'a> {
     pub values: Vec<Value>,
@@ -86,12 +86,13 @@ pub fn bind<'a>(stmt: Statement, db: &'a Database) -> Result<BoundStatement<'a>,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{ColumnType, TableBuilder};
+    use crate::storage::TableBuilder;
+    use crate::types::ColumnType;
     use ordered_float::OrderedFloat;
 
     #[test]
     fn test_bind_insert_success() {
-        let mut db = Database::memory();
+        let mut db = Database::memory().unwrap();
         db.create_table(TableBuilder::new("users").column("id", ColumnType::Number))
             .unwrap();
 
@@ -106,7 +107,7 @@ mod tests {
 
     #[test]
     fn test_bind_insert_table_not_found() {
-        let db = Database::memory();
+        let db = Database::memory().unwrap();
 
         let stmt = Statement::Insert(InsertStatement {
             table_name: "nonexistent".to_string(),
