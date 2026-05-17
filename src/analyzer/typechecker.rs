@@ -1,6 +1,8 @@
 use crate::analyzer::bound::*;
-use crate::sql::ast::{Expression, Operator, Type, Value};
-use crate::storage::{ColumnType, Table};
+use crate::column::ColumnType;
+use crate::sql::ast::{Expression, Operator};
+use crate::storage::Table;
+use crate::value::{Type, Value};
 use ordered_float::OrderedFloat;
 
 #[derive(Debug, Clone)]
@@ -46,6 +48,13 @@ fn typecheck_insert(stmt: &BoundInsertStatement) -> Result<(), TypeError> {
 }
 fn typecheck_select(stmt: &BoundSelectStatement) -> Result<(), TypeError> {
     // Since this is already bound, we don't need to validate columns or table really.
+    if let Some(expr) = &stmt.expr {
+        typecheck_expression(expr, stmt.table)?;
+    }
+    Ok(())
+}
+fn typecheck_delete(stmt: &BoundDeleteStatement) -> Result<(), TypeError> {
+    // Since this is already bound, we don't need to validate table really.
     if let Some(expr) = &stmt.expr {
         typecheck_expression(expr, stmt.table)?;
     }
@@ -122,6 +131,7 @@ pub fn typecheck(stmt: &BoundStatement) -> Result<(), TypeError> {
     match stmt {
         BoundStatement::Insert(s) => typecheck_insert(s),
         BoundStatement::Select(s) => typecheck_select(s),
+        BoundStatement::Delete(s) => typecheck_delete(s),
     }
 }
 
@@ -145,7 +155,10 @@ mod tests {
         let table = make_test_table();
         let stmt = BoundInsertStatement {
             table: &table,
-            values: vec![Value::Number(OrderedFloat(1.0)), Value::Varchar("alice".to_string())],
+            values: vec![
+                Value::Number(OrderedFloat(1.0)),
+                Value::Varchar("alice".to_string()),
+            ],
         };
 
         let result = typecheck_insert(&stmt);

@@ -13,6 +13,7 @@ pub enum TokenType {
     // Operations
     Insert,
     Select,
+    Delete,
 
     // ..
     Into,
@@ -307,6 +308,7 @@ impl LexerContext {
                 let token_type = match lexeme.to_uppercase().as_str() {
                     "INSERT" => TokenType::Insert,
                     "SELECT" => TokenType::Select,
+                    "DELETE" => TokenType::Delete,
                     "INTO" => TokenType::Into,
                     "FROM" => TokenType::From,
                     "WHERE" => TokenType::Where,

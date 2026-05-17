@@ -1,10 +1,9 @@
 use super::pager::{PAGE_SIZE, Pager};
-use crate::sql::ast::{Type, Value};
-use crate::tree::HEADER_SIZE;
-use crate::tree::Node;
-use crate::types::Cursor;
+use crate::column::{deserialize_row, serialize_row, Column, ColumnType};
+use crate::cursor::Cursor;
+use crate::node::{Node, HEADER_SIZE};
+use crate::value::Value;
 use indexmap::IndexMap;
-use ordered_float::OrderedFloat;
 use std::cell::{Cell, RefCell};
 
 #[derive(Debug)]
@@ -12,104 +11,6 @@ pub enum TableError {
     ReservedColumnName(String),
     DuplicateColumn(String),
     NoColumns,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ColumnType {
-    Number,
-    Varchar(usize),
-    Bool,
-}
-
-impl ColumnType {
-    pub fn size(self) -> usize {
-        match self {
-            ColumnType::Number => 8,     // 8 Bytes == 64 Bits
-            ColumnType::Varchar(n) => n, // 1 Byte == 8 Bits per Character
-            ColumnType::Bool => 1,       // 1 Byte
-        }
-    }
-
-    pub fn to_type(self) -> Type {
-        match self {
-            ColumnType::Number => Type::Number,
-            ColumnType::Varchar(n) => Type::Varchar(n),
-            ColumnType::Bool => Type::Bool,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Column {
-    pub name: String,
-    pub column_type: ColumnType,
-    pub column_size: usize,
-}
-
-impl Column {
-    pub fn new(name: String, column_type: ColumnType) -> Self {
-        Column {
-            name,
-            column_type,
-            column_size: column_type.size(),
-        }
-    }
-}
-
-pub fn serialize_row(values: &[Value], columns: Vec<&Column>, dest: &mut [u8]) {
-    let mut offset = 0;
-    for (value, column) in std::iter::zip(values, columns) {
-        match value {
-            Value::Number(value) => {
-                dest[offset..offset + column.column_size].copy_from_slice(&value.to_le_bytes());
-                offset += column.column_size;
-            }
-
-            // @TODO : Currently we just null-pad these
-            Value::Varchar(value) => {
-                let bytes = value.as_bytes();
-                let len = bytes.len().min(column.column_size);
-                dest[offset..offset + len].copy_from_slice(&bytes[..len]);
-                dest[offset + len..offset + column.column_size].fill(0);
-                offset += column.column_size;
-            }
-
-            Value::Bool(value) => {
-                dest[offset] = if *value { 1 } else { 0 };
-                offset += 1;
-            }
-        }
-    }
-}
-
-pub fn deserialize_row(columns: &Vec<&Column>, src: &[u8]) -> Vec<Value> {
-    let mut values: Vec<Value> = Vec::with_capacity(columns.len());
-    let mut offset = 0;
-    for column in columns {
-        match column.column_type {
-            ColumnType::Number => {
-                let bytes = src[offset..offset + column.column_size].try_into().unwrap();
-                let num = f64::from_le_bytes(bytes);
-                offset += column.column_size;
-                values.push(Value::Number(OrderedFloat(num)))
-            }
-
-            ColumnType::Varchar(max_len) => {
-                let bytes = &src[offset..offset + max_len];
-                let end = bytes.iter().position(|&b| b == 0).unwrap_or(max_len);
-                let s = String::from_utf8_lossy(&bytes[..end]).into_owned();
-                offset += column.column_size;
-                values.push(Value::Varchar(s));
-            }
-
-            ColumnType::Bool => {
-                let value = src[offset] != 0;
-                offset += 1;
-                values.push(Value::Bool(value));
-            }
-        };
-    }
-    values
 }
 
 #[derive(Debug)]
@@ -194,7 +95,7 @@ impl Table {
         loop {
             let page = pager.get_page(page_num);
 
-            if Node::is_leaf(&page.data) {
+            if Node::read_is_leaf(&page.data) {
                 let num_cells = Node::read_num_cells(&page.data);
                 return Cursor {
                     table: self,
@@ -214,7 +115,7 @@ impl Table {
         loop {
             let page = pager.get_page(page_num);
 
-            if Node::is_leaf(&page.data) {
+            if Node::read_is_leaf(&page.data) {
                 let num_cells = Node::read_num_cells(&page.data);
                 return Cursor {
                     table: self,

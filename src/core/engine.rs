@@ -1,8 +1,9 @@
 use crate::analyzer::bound::*;
-use crate::sql::ast::{Expression, Operator, Value};
-use crate::storage::table::{Column, deserialize_row, serialize_row};
-use crate::tree::Node;
-use crate::types::{Cursor, QueryResult};
+use crate::column::Column;
+use crate::node::Node;
+use crate::sql::ast::{Expression, Operator};
+use crate::types::QueryResult;
+use crate::value::Value;
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
 
@@ -120,6 +121,55 @@ pub fn execute_insert(stmt: &BoundInsertStatement) -> Result<u64, EngineError> {
     table.insert(key, &all_values);
     Ok(1)
 }
+pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, EngineError> {
+    let table = stmt.table;
+
+    let mut results = 0;
+    let mut cursor = table.start();
+    let primary_key_index = stmt
+        .table
+        .columns
+        .get_index_of(&stmt.table.primary_key_name)
+        .ok_or_else(|| EngineError {
+            message: "Could not find primary key index in table columns".to_string(),
+        })?;
+    let cols: Vec<&Column> = table.columns.values().collect();
+    let col_names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+    while !cursor.eot {
+        let node = cursor.read_node();
+        let Node::Leaf { cells, .. } = node else {
+            return Err(EngineError {
+                message: "should never receive a non-leaf node from cursor".into(),
+            })?;
+        };
+
+        let (_, row) = &cells[cursor.cell_num];
+        let values: HashMap<&str, Value> =
+            col_names.iter().copied().zip(row.iter().cloned()).collect();
+
+        if let Some(expr) = &stmt.expr {
+            match eval_expr(expr, &values)? {
+                Value::Bool(true) => {}
+                Value::Bool(false) => {
+                    cursor.advance();
+                    continue;
+                }
+
+                _ => {
+                    return Err(EngineError {
+                        message: "WHERE must be bool".into(),
+                    });
+                }
+            }
+        }
+        let key = &row[primary_key_index];
+        table.delete(key);
+        cursor.refresh();
+        results += 1;
+    }
+
+    Ok(results)
+}
 
 pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, EngineError> {
     let table = stmt.table;
@@ -177,6 +227,12 @@ pub fn execute(stmt: &BoundStatement) -> Result<QueryResult, EngineError> {
         BoundStatement::Insert(s) => {
             let rows = execute_insert(s)?;
             Ok(QueryResult::Insert {
+                rows_affected: rows,
+            })
+        }
+        BoundStatement::Delete(s) => {
+            let rows = execute_delete(s)?;
+            Ok(QueryResult::Delete {
                 rows_affected: rows,
             })
         }

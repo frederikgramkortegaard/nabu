@@ -1,7 +1,40 @@
-use crate::sql::ast::Value;
-use crate::storage::table::*;
+use crate::column::{Column, deserialize_row, serialize_row};
+use crate::value::Value;
 
 pub const HEADER_SIZE: usize = 12;
+
+/*
+ * NODE HEADER (12 bytes)
+ * ----------------------
+ * +0   u8    is_leaf      0=internal, !0=leaf
+ * +1   u8    is_root      0=root, 1=not root
+ * +2   u32   parent       0xFFFFFFFF=NULL
+ * +6   u16   num_cells
+ * +8   u32   right_child  (internal) \_ same field,
+ *            next_leaf    (leaf)     /  0xFFFFFFFF=NULL
+ *
+ * INTERNAL NODE (is_leaf=0)
+ * -------------------------
+ * [HEADER][child0|key0][child1|key1]...[childN-1|keyN-1]
+ *          |_4B_||_ks_|
+ *
+ * right_child in header = childN (rightmost)
+ * N keys => N+1 children
+ *
+ * LEAF NODE (is_leaf=1)
+ * ---------------------
+ * [HEADER][key0|row0][key1|row1]...[keyN-1|rowN-1]
+ *          |ks||_rs_|
+ *
+ * next_leaf => sibling pointer for range scans
+ *
+ * ks = key_size, rs = row_size
+ */
+
+#[derive(Debug)]
+pub enum DataAccessError {
+    OutOfBounds { index: usize, len: usize },
+}
 
 #[derive(Debug)]
 pub enum Node {
@@ -23,12 +56,18 @@ impl Node {
             Node::Internal { parent, .. } | Node::Leaf { parent, .. } => parent.is_none(),
         }
     }
+
+    pub fn read_is_root(src: &[u8]) -> bool {
+        src[1] == 1
+    }
+
     pub fn num_cells(&self) -> usize {
         match self {
             Node::Internal { keys, .. } => keys.len(),
             Node::Leaf { cells, .. } => cells.len(),
         }
     }
+
     pub fn read_num_cells(src: &[u8]) -> usize {
         let bytes: [u8; 2] = src[6..8].try_into().unwrap();
         u16::from_le_bytes(bytes) as usize
@@ -41,7 +80,7 @@ impl Node {
         }
     }
 
-    pub fn is_leaf(src: &[u8]) -> bool {
+    pub fn read_is_leaf(src: &[u8]) -> bool {
         src[0] != 0
     }
 
@@ -50,8 +89,17 @@ impl Node {
         u32::from_le_bytes(bytes) as usize
     }
 
+    pub fn read_next_leaf(src: &[u8]) -> Option<usize> {
+        let ptr_bytes: [u8; 4] = src[8..12].try_into().unwrap();
+        let ptr_raw = u32::from_le_bytes(ptr_bytes);
+        if Node::read_is_leaf(src) && ptr_raw != 0xffffffff {
+            Some(ptr_raw as usize)
+        } else {
+            None
+        }
+    }
+
     pub fn read_left_child(src: &[u8]) -> usize {
-        // First cell starts at HEADER_SIZE (12), child pointer is first 4 bytes
         let bytes: [u8; 4] = src[12..16].try_into().unwrap();
         u32::from_le_bytes(bytes) as usize
     }
@@ -61,6 +109,40 @@ impl Node {
             Node::Internal { parent, .. } | Node::Leaf { parent, .. } => *parent,
         }
     }
+
+    pub fn read_parent(src: &[u8]) -> Option<usize> {
+        let parent_bytes: [u8; 4] = src[2..6].try_into().unwrap();
+        let parent_raw = u32::from_le_bytes(parent_bytes);
+        if parent_raw == 0xffffffff {
+            None
+        } else {
+            Some(parent_raw as usize)
+        }
+    }
+
+    pub fn read_key_at(
+        src: &[u8],
+        n: usize,
+        key_column: &Column,
+        row_size: usize,
+    ) -> Result<Value, DataAccessError> {
+        let num_cells = Self::read_num_cells(src);
+        if n >= num_cells {
+            return Err(DataAccessError::OutOfBounds {
+                index: n,
+                len: num_cells,
+            });
+        }
+
+        let offset = if Node::read_is_leaf(src) {
+            HEADER_SIZE + n * (key_column.column_size + row_size)
+        } else {
+            HEADER_SIZE + n * (4 + key_column.column_size) + 4
+        };
+
+        Ok(Value::deserialize(&src[offset..], key_column))
+    }
+
     pub fn serialize(
         &self,
         dest: &mut [u8],
@@ -81,11 +163,7 @@ impl Node {
 
         let mut offset = 12;
         match self {
-            Node::Internal {
-                parent,
-                keys,
-                children,
-            } => {
+            Node::Internal { keys, children, .. } => {
                 match children.last() {
                     Some(c) => dest[8..12].copy_from_slice(&(*c as u32).to_le_bytes()),
                     None => dest[8..12].fill(0xff),
@@ -98,9 +176,7 @@ impl Node {
                 }
             }
             Node::Leaf {
-                parent,
-                cells,
-                next_leaf,
+                cells, next_leaf, ..
             } => {
                 match next_leaf {
                     Some(nl) => dest[8..12].copy_from_slice(&(*nl as u32).to_le_bytes()),
@@ -119,16 +195,8 @@ impl Node {
 
     pub fn deserialize(src: &[u8], key_size: usize, row_size: usize, columns: &[&Column]) -> Node {
         let is_leaf = src[0] != 0;
-        let _is_root = src[1] == 0;
 
-        let parent_bytes: [u8; 4] = src[2..6].try_into().unwrap();
-        let parent_raw = u32::from_le_bytes(parent_bytes);
-        let parent = if parent_raw == 0xffffffff {
-            None
-        } else {
-            Some(parent_raw as usize)
-        };
-
+        let parent = Self::read_parent(src);
         let num_cells = Self::read_num_cells(src);
 
         let ptr_bytes: [u8; 4] = src[8..12].try_into().unwrap();
@@ -143,16 +211,11 @@ impl Node {
 
             let mut cells = Vec::with_capacity(num_cells);
             let mut offset = HEADER_SIZE;
-            let cell_size = key_size + row_size;
 
             for _ in 0..num_cells {
-                // Deserialize key (first column)
-                let key_col = &columns[0];
-                let key =
-                    deserialize_row(&vec![key_col], &src[offset..offset + key_size])[0].clone();
+                let key = Value::deserialize(&src[offset..], &columns[0]);
                 offset += key_size;
 
-                // Deserialize row
                 let row = deserialize_row(&columns.to_vec(), &src[offset..offset + row_size]);
                 offset += row_size;
 
@@ -172,20 +235,15 @@ impl Node {
             let mut offset = HEADER_SIZE;
 
             for _ in 0..num_cells {
-                // Child pointer
                 let child_bytes: [u8; 4] = src[offset..offset + 4].try_into().unwrap();
                 children.push(u32::from_le_bytes(child_bytes) as usize);
                 offset += 4;
 
-                // Key
-                let key_col = &columns[0];
-                let key =
-                    deserialize_row(&vec![key_col], &src[offset..offset + key_size])[0].clone();
+                let key = Value::deserialize(&src[offset..], &columns[0]);
                 keys.push(key);
                 offset += key_size;
             }
 
-            // Add right child
             children.push(right_child);
 
             Node::Internal {

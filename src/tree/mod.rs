@@ -1,3 +1,1 @@
-mod nodes;
-
-pub use nodes::{HEADER_SIZE, Node};
+pub use crate::node::{Node, HEADER_SIZE};

@@ -1,6 +1,6 @@
+use crate::column::Column;
 use crate::sql::ast::*;
-use crate::storage::database::Database;
-use crate::storage::table::{Column, Table};
+use crate::storage::{Database, Table};
 use ordered_float::OrderedFloat;
 #[derive(Debug)]
 pub struct BoundInsertStatement<'a> {
@@ -14,11 +14,17 @@ pub struct BoundSelectStatement<'a> {
     pub table: &'a Table,
     pub expr: Option<Box<Expression>>,
 }
+#[derive(Debug)]
+pub struct BoundDeleteStatement<'a> {
+    pub table: &'a Table,
+    pub expr: Option<Box<Expression>>,
+}
 
 #[derive(Debug)]
 pub enum BoundStatement<'a> {
     Insert(BoundInsertStatement<'a>),
     Select(BoundSelectStatement<'a>),
+    Delete(BoundDeleteStatement<'a>),
 }
 
 #[derive(Debug)]
@@ -70,10 +76,26 @@ fn bind_select<'a>(
         expr: stmt.expr,
     }))
 }
+fn bind_delete<'a>(
+    stmt: DeleteStatement,
+    db: &'a Database,
+) -> Result<BoundStatement<'a>, BindingError> {
+    let table = db
+        .get_table(stmt.table.as_str())
+        .ok_or_else(|| BindingError {
+            message: format!("table '{:?}' does not exist", stmt.table),
+        })?;
+
+    Ok(BoundStatement::Delete(BoundDeleteStatement {
+        table,
+        expr: stmt.expr,
+    }))
+}
 pub fn bind<'a>(stmt: Statement, db: &'a Database) -> Result<BoundStatement<'a>, BindingError> {
     match stmt {
         Statement::Insert(s) => bind_insert(s, db),
         Statement::Select(s) => bind_select(s, db),
+        Statement::Delete(s) => bind_delete(s, db),
     }
 }
 

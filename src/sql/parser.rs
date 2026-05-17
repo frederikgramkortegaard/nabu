@@ -1,4 +1,6 @@
-use super::ast::{Expression, InsertStatement, Operator, SelectStatement, Statement, Value};
+use super::ast::{
+    DeleteStatement, Expression, InsertStatement, Operator, SelectStatement, Statement, Value,
+};
 use super::lexer::{Token, TokenType};
 use ordered_float::OrderedFloat;
 
@@ -138,7 +140,10 @@ impl<'a> ParserContext<'a> {
             TokenType::Or => 1,
             TokenType::And => 2,
             TokenType::Equal | TokenType::NotEqual => 3,
-            TokenType::Less | TokenType::Greater | TokenType::LessEqual | TokenType::GreaterEqual => 4,
+            TokenType::Less
+            | TokenType::Greater
+            | TokenType::LessEqual
+            | TokenType::GreaterEqual => 4,
             TokenType::Plus | TokenType::Minus => 5,
             TokenType::Star | TokenType::Slash => 6,
             _ => -1,
@@ -274,6 +279,24 @@ impl<'a> ParserContext<'a> {
                     }))
                 }
 
+                TokenType::Delete => {
+                    self.consume();
+                    self.consume_optional(TokenType::LParen);
+
+                    self.consume_assert(TokenType::From, "Expected FROM after SELECT".to_string())?;
+
+                    let table = self.consume_identifier().ok_or_else(|| ParseError {
+                        message: "Expected table name after FROM".to_string(),
+                    })?;
+
+                    let expr = if self.consume_optional(TokenType::Where).is_some() {
+                        Some(Box::new(self.parse_expression()?))
+                    } else {
+                        None
+                    };
+
+                    Ok(Statement::Delete(DeleteStatement { table, expr }))
+                }
                 TokenType::Insert => {
                     self.consume();
                     let values = self.parse_values()?;
@@ -376,14 +399,26 @@ mod tests {
     #[test]
     fn test_parse_expr_binary_eq() {
         let expr = parse_expr("age == 25").unwrap();
-        assert!(matches!(expr, Expression::BinaryOp { op: Operator::Eq, .. }));
+        assert!(matches!(
+            expr,
+            Expression::BinaryOp {
+                op: Operator::Eq,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn test_parse_expr_binary_and() {
         let expr = parse_expr("age == 25 && name == \"alice\"").unwrap();
         // Top level should be And (lower precedence than ==)
-        assert!(matches!(expr, Expression::BinaryOp { op: Operator::And, .. }));
+        assert!(matches!(
+            expr,
+            Expression::BinaryOp {
+                op: Operator::And,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -393,7 +428,13 @@ mod tests {
         if let Expression::BinaryOp { op, lhs, rhs } = expr {
             assert!(matches!(op, Operator::Add));
             assert!(matches!(*lhs, Expression::Literal(Value::Number(n)) if n == 1.0));
-            assert!(matches!(*rhs, Expression::BinaryOp { op: Operator::Mul, .. }));
+            assert!(matches!(
+                *rhs,
+                Expression::BinaryOp {
+                    op: Operator::Mul,
+                    ..
+                }
+            ));
         } else {
             panic!("Expected BinaryOp");
         }
@@ -405,7 +446,13 @@ mod tests {
         let expr = parse_expr("(1 + 2) * 3").unwrap();
         if let Expression::BinaryOp { op, lhs, rhs } = expr {
             assert!(matches!(op, Operator::Mul));
-            assert!(matches!(*lhs, Expression::BinaryOp { op: Operator::Add, .. }));
+            assert!(matches!(
+                *lhs,
+                Expression::BinaryOp {
+                    op: Operator::Add,
+                    ..
+                }
+            ));
             assert!(matches!(*rhs, Expression::Literal(Value::Number(n)) if n == 3.0));
         } else {
             panic!("Expected BinaryOp");

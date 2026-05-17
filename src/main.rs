@@ -1,10 +1,14 @@
 mod analyzer;
+mod column;
 mod core;
+mod cursor;
 mod error;
+mod node;
 mod sql;
 mod storage;
 mod tree;
 mod types;
+mod value;
 
 use error::Error;
 use sql::lexer::LexerContext;
@@ -43,6 +47,14 @@ fn main() {
         &mydb,
         "INSERT (1, 16, \"bob\", \"alice@example.com\") INTO MyTable",
     );
+    println!("{:?}", result);
+    let result = run_query(
+        &mydb,
+        "SELECT _rowid, id, age, username FROM MyTable where age >= 18",
+    );
+    println!("{:?}", result);
+
+    let result = run_query(&mydb, "DELETE FROM MyTable where age >= 18");
     println!("{:?}", result);
     let result = run_query(
         &mydb,
