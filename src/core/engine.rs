@@ -139,7 +139,7 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, En
         let node = cursor.read_node();
         let Node::Leaf { cells, .. } = node else {
             return Err(EngineError {
-                message: "...".into(),
+                message: "should never receive a non-leaf node from cursor".into(),
             })?;
         };
 

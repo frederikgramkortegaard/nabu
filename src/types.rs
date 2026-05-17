@@ -49,4 +49,18 @@ impl Cursor<'_> {
         self.table
             .write_cell(self.page_num, self.cell_num, key, row)
     }
+
+    pub fn with_node<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&Node) -> R,
+    {
+        self.table.with_node(self.page_num, f)
+    }
+
+    pub fn with_node_mut<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut Node) -> R,
+    {
+        self.table.with_node_mut(self.page_num, f)
+    }
 }

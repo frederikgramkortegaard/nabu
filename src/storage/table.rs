@@ -288,6 +288,24 @@ impl Table {
         node.serialize(&mut page.data, self.key_size, self.row_size, &cols);
     }
 
+    pub fn with_node<F, R>(&self, page_num: usize, f: F) -> R
+    where
+        F: FnOnce(&Node) -> R,
+    {
+        let node = self.read_node(page_num);
+        f(&node)
+    }
+
+    pub fn with_node_mut<F, R>(&self, page_num: usize, f: F) -> R
+    where
+        F: FnOnce(&mut Node) -> R,
+    {
+        let mut node = self.read_node(page_num);
+        let result = f(&mut node);
+        self.write_node(page_num, &node);
+        result
+    }
+
     pub fn insert_into_leaf(&self, page_num: usize, key: &Value, row: &[Value]) {
         let node = self.read_node(page_num);
         let Node::Leaf { cells, .. } = node else {
@@ -491,6 +509,21 @@ impl Table {
         if let Some((split_key, new_sibling)) = self.insert_recursive(old_root, key, row) {
             self.create_new_root(&split_key, old_root, new_sibling);
         }
+    }
+
+    pub fn delete(&self, key: &Value) {
+        //@TODO thsi is the simple approach of not actually doing the re-balancing,
+        //as even without re-balancing we still get the logarithmic search property,
+        //it is not uncommon to just naively delete
+        let (cursor, found) = self.search(key);
+        if !found {
+            return;
+        }
+        cursor.with_node_mut(|mut node| {
+            if let Node::Leaf { cells, .. } = &mut node {
+                cells.remove(cursor.cell_num);
+            };
+        });
     }
 
     pub fn create_new_root(&self, split_key: &Value, left_child: usize, right_child: usize) {
