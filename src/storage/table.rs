@@ -1,7 +1,10 @@
 use super::pager::{PAGE_SIZE, Pager};
 use crate::sql::ast::{Type, Value};
+use crate::tree::HEADER_SIZE;
+use crate::tree::Node;
 use crate::types::Cursor;
 use indexmap::IndexMap;
+use ordered_float::OrderedFloat;
 use std::cell::{Cell, RefCell};
 
 #[derive(Debug)]
@@ -88,7 +91,7 @@ pub fn deserialize_row(columns: &Vec<&Column>, src: &[u8]) -> Vec<Value> {
                 let bytes = src[offset..offset + column.column_size].try_into().unwrap();
                 let num = f64::from_le_bytes(bytes);
                 offset += column.column_size;
-                values.push(Value::Number(num))
+                values.push(Value::Number(OrderedFloat(num)))
             }
 
             ColumnType::Varchar(max_len) => {
@@ -159,8 +162,14 @@ pub struct Table {
     pub name: String,
     pub columns: IndexMap<String, Column>,
     pub rows: Cell<usize>,
+    pub root_page: Cell<usize>, // Page number of the root node
     pub row_size: usize,
     pub rows_per_page: usize,
+    pub primary_key_name: String,
+    pub key_size: usize,
+    pub cell_size: usize,
+    pub max_cells_per_leaf: usize,
+    pub max_keys_per_internal: usize,
     pub pager: RefCell<Pager>,
 }
 
@@ -179,18 +188,362 @@ impl Table {
     }
 
     pub fn start<'a>(&'a self) -> Cursor<'a> {
-        Cursor {
-            table: self,
-            row: 0,
-            eot: self.rows.get() == 0,
+        let mut page_num = self.root_page.get();
+        let mut pager = self.pager.borrow_mut();
+
+        loop {
+            let page = pager.get_page(page_num);
+
+            if Node::is_leaf(&page.data) {
+                let num_cells = Node::read_num_cells(&page.data);
+                return Cursor {
+                    table: self,
+                    eot: num_cells == 0,
+                    page_num,
+                    cell_num: 0,
+                };
+            } else {
+                page_num = Node::read_left_child(&page.data);
+            }
         }
     }
     pub fn end<'a>(&'a self) -> Cursor<'a> {
-        Cursor {
-            table: self,
-            row: self.rows.get(),
-            eot: true,
+        let mut page_num = self.root_page.get();
+        let mut pager = self.pager.borrow_mut();
+
+        loop {
+            let page = pager.get_page(page_num);
+
+            if Node::is_leaf(&page.data) {
+                let num_cells = Node::read_num_cells(&page.data);
+                return Cursor {
+                    table: self,
+                    eot: true,
+                    page_num,
+                    cell_num: num_cells,
+                };
+            } else {
+                page_num = Node::read_right_child(&page.data);
+            }
         }
+    }
+
+    pub fn search(&self, key: &Value) -> (Cursor, bool) {
+        let leaf_page = self.leaf_search(self.root_page.get(), key);
+        let node = self.read_node(leaf_page);
+        let cell = self.cell_search(leaf_page, key);
+        let (cell_num, found) = match cell {
+            Ok(idx) => (idx, true),
+            Err(idx) => (idx, false),
+        };
+        let eot = node.next_leaf().is_none() && cell_num >= node.num_cells();
+
+        (
+            Cursor {
+                table: self,
+                eot,
+                page_num: leaf_page,
+                cell_num,
+            },
+            found,
+        )
+    }
+
+    pub fn cell_search(&self, page_num: usize, key: &Value) -> Result<usize, usize> {
+        let Node::Leaf { cells, .. } = self.read_node(page_num) else {
+            panic!("cell_search called on non-leaf node")
+        };
+
+        cells.binary_search_by(|(pkey, _row)| pkey.cmp(key))
+    }
+
+    pub fn leaf_search(&self, page_num: usize, key: &Value) -> usize {
+        let node = self.read_node(page_num);
+        match node {
+            Node::Leaf { .. } => page_num,
+            Node::Internal { keys, children, .. } => {
+                let m = children.len();
+                for i in 0..m {
+                    if key.leq(&keys[i]) {
+                        return self.leaf_search(children[i], key);
+                    }
+                }
+
+                self.leaf_search(children[m - 1], key)
+            }
+        }
+    }
+
+    pub fn read_node(&self, page_num: usize) -> Node {
+        let mut pager = self.pager.borrow_mut();
+        let page = pager.get_page(page_num);
+        let cols: Vec<&Column> = self.columns.values().collect();
+        Node::deserialize(&page.data, self.key_size, self.row_size, &cols)
+    }
+
+    pub fn write_node(&self, page_num: usize, node: &Node) {
+        let mut pager = self.pager.borrow_mut();
+        let page = pager.get_page(page_num);
+        let cols: Vec<&Column> = self.columns.values().collect();
+        node.serialize(&mut page.data, self.key_size, self.row_size, &cols);
+    }
+
+    pub fn insert_into_leaf(&self, page_num: usize, key: &Value, row: &[Value]) {
+        let node = self.read_node(page_num);
+        let Node::Leaf { cells, .. } = node else {
+            panic!("insert_into_leaf called on non-leaf");
+        };
+
+        // Find insert position
+        let cell_num = match cells.binary_search_by(|(k, _)| k.cmp(key)) {
+            Ok(idx) => idx,  // duplicate key - overwrite
+            Err(idx) => idx, // insert position
+        };
+
+        self.shift_cells_right(page_num, cell_num);
+        self.write_cell(page_num, cell_num, key, row);
+    }
+
+    pub fn insert_into_internal(&self, page_num: usize, split_key: &Value, new_child: usize) {
+        let mut node = self.read_node(page_num);
+        let Node::Internal {
+            ref mut keys,
+            ref mut children,
+            ..
+        } = node
+        else {
+            panic!("insert_into_internal called on non-internal");
+        };
+
+        // Find insert position for key
+        let idx = match keys.binary_search(split_key) {
+            Ok(idx) => idx + 1,
+            Err(idx) => idx,
+        };
+
+        keys.insert(idx, split_key.clone());
+        children.insert(idx + 1, new_child);
+
+        self.write_node(page_num, &node);
+    }
+
+    pub fn split_leaf(&self, page_num: usize) -> (Value, usize) {
+        let mut node = self.read_node(page_num);
+        let Node::Leaf {
+            ref mut cells,
+            ref mut next_leaf,
+            parent,
+        } = node
+        else {
+            panic!("split_leaf called on non-leaf");
+        };
+
+        let mid = cells.len() / 2;
+        let right_cells: Vec<_> = cells.drain(mid..).collect();
+        let split_key = right_cells[0].0.clone();
+
+        // Allocate new page for right sibling
+        let new_page = self.pager.borrow_mut().alloc_page();
+
+        // Right sibling points to old next_leaf
+        let right_node = Node::Leaf {
+            parent,
+            cells: right_cells,
+            next_leaf: *next_leaf,
+        };
+
+        // Left node now points to right sibling
+        *next_leaf = Some(new_page);
+
+        self.write_node(page_num, &node);
+        self.write_node(new_page, &right_node);
+
+        (split_key, new_page)
+    }
+
+    pub fn split_internal(&self, page_num: usize) -> (Value, usize) {
+        let mut node = self.read_node(page_num);
+        let Node::Internal {
+            ref mut keys,
+            ref mut children,
+            parent,
+        } = node
+        else {
+            panic!("split_internal called on non-internal");
+        };
+
+        let mid = keys.len() / 2;
+
+        // Middle key goes UP to parent, not into either half
+        let split_key = keys[mid].clone();
+
+        // Right half gets keys after mid, and children after mid
+        let right_keys: Vec<_> = keys.drain(mid + 1..).collect();
+        let right_children: Vec<_> = children.drain(mid + 1..).collect();
+
+        // Remove the middle key from left half (it goes up)
+        keys.pop();
+
+        let new_page = self.pager.borrow_mut().alloc_page();
+
+        let right_node = Node::Internal {
+            parent,
+            keys: right_keys,
+            children: right_children.clone(),
+        };
+
+        self.write_node(page_num, &node);
+        self.write_node(new_page, &right_node);
+
+        // Update parent pointers for children that moved to the new sibling
+        for &child_page in &right_children {
+            self.set_parent(child_page, new_page);
+        }
+
+        (split_key, new_page)
+    }
+
+    pub fn split_leaf_and_insert(
+        &self,
+        page_num: usize,
+        key: &Value,
+        row: &[Value],
+    ) -> (Value, usize) {
+        let (split_key, new_page) = self.split_leaf(page_num);
+
+        if key.leq(&split_key) {
+            self.insert_into_leaf(page_num, key, row);
+        } else {
+            self.insert_into_leaf(new_page, key, row);
+        }
+
+        (split_key, new_page)
+    }
+
+    pub fn split_internal_and_insert(
+        &self,
+        page_num: usize,
+        key: &Value,
+        new_child: usize,
+    ) -> (Value, usize) {
+        let (split_key, new_page) = self.split_internal(page_num);
+
+        if key.leq(&split_key) {
+            self.insert_into_internal(page_num, key, new_child);
+        } else {
+            self.insert_into_internal(new_page, key, new_child);
+        }
+
+        (split_key, new_page)
+    }
+
+    pub fn node_is_full(&self, page_num: usize) -> bool {
+        //@TODO can probably be optimized to not read the whole node...
+        let node = self.read_node(page_num);
+        match node {
+            Node::Leaf { cells, .. } => self.max_cells_per_leaf <= cells.len(),
+            Node::Internal { keys, .. } => self.max_keys_per_internal <= keys.len(),
+        }
+    }
+
+    pub fn insert_recursive(
+        &self,
+        page_num: usize,
+        key: &Value,
+        values: &[Value],
+    ) -> Option<(Value, usize)> {
+        let node = self.read_node(page_num);
+
+        match node {
+            Node::Internal { keys, children, .. } => {
+                let child_idx = match keys.binary_search(key) {
+                    Ok(idx) => idx + 1, // key found, go right
+                    Err(idx) => idx,    // go to child at insert position
+                };
+
+                if let Some((split_key, new_sibling)) =
+                    self.insert_recursive(children[child_idx], key, values)
+                {
+                    if keys.len() < self.max_keys_per_internal {
+                        self.insert_into_internal(page_num, &split_key, new_sibling);
+                        None
+                    } else {
+                        Some(self.split_internal_and_insert(page_num, &split_key, new_sibling))
+                    }
+                } else {
+                    None
+                }
+            }
+            Node::Leaf { cells, .. } => {
+                if cells.len() < self.max_cells_per_leaf {
+                    self.insert_into_leaf(page_num, key, values);
+                    None
+                } else {
+                    let (split_key, new_sibling) =
+                        self.split_leaf_and_insert(page_num, key, values);
+                    Some((split_key, new_sibling))
+                }
+            }
+        }
+    }
+    pub fn insert(&self, key: &Value, row: &[Value]) {
+        let old_root = self.root_page.get();
+        if let Some((split_key, new_sibling)) = self.insert_recursive(old_root, key, row) {
+            self.create_new_root(&split_key, old_root, new_sibling);
+        }
+    }
+
+    pub fn create_new_root(&self, split_key: &Value, left_child: usize, right_child: usize) {
+        let new_root_page = self.pager.borrow_mut().alloc_page();
+
+        let new_root = Node::Internal {
+            parent: None,
+            keys: vec![split_key.clone()],
+            children: vec![left_child, right_child],
+        };
+
+        self.write_node(new_root_page, &new_root);
+        self.root_page.set(new_root_page);
+
+        // Update children's parent pointers
+        self.set_parent(left_child, new_root_page);
+        self.set_parent(right_child, new_root_page);
+    }
+
+    fn set_parent(&self, page_num: usize, parent_page: usize) {
+        let mut node = self.read_node(page_num);
+        match &mut node {
+            Node::Internal { parent, .. } | Node::Leaf { parent, .. } => {
+                *parent = Some(parent_page);
+            }
+        }
+        self.write_node(page_num, &node);
+    }
+
+    pub fn shift_cells_right(&self, page_num: usize, from: usize) {
+        let mut pager = self.pager.borrow_mut();
+        let page = pager.get_page(page_num);
+
+        let num_cells = Node::read_num_cells(&page.data);
+        let shift_start = HEADER_SIZE + from * self.cell_size;
+        let shift_end = HEADER_SIZE + num_cells * self.cell_size;
+
+        page.data
+            .copy_within(shift_start..shift_end, shift_start + self.cell_size);
+
+        let new_count = (num_cells + 1) as u16;
+        page.data[6..8].copy_from_slice(&new_count.to_le_bytes());
+    }
+
+    pub fn write_cell(&self, page_num: usize, cell_num: usize, key: &Value, row: &[Value]) {
+        let mut pager = self.pager.borrow_mut();
+        let page = pager.get_page(page_num);
+
+        let offset = HEADER_SIZE + cell_num * self.cell_size;
+        key.serialize(&mut page.data[offset..], self.key_size);
+
+        let cols: Vec<&Column> = self.columns.values().collect();
+        serialize_row(row, cols, &mut page.data[offset + self.key_size..]);
     }
 
     fn from_columns(name: String, user_columns: IndexMap<String, Column>) -> Self {
@@ -204,19 +557,186 @@ impl Table {
 
         let row_size: usize = columns.iter().map(|(_, c)| c.column_size).sum();
         let rows_per_page = PAGE_SIZE / row_size;
+        let primary_key_name = columns[0].name.clone();
+        let key_size = columns[0].column_size;
+        let cell_size = key_size + row_size;
+        let max_cells_per_leaf = (PAGE_SIZE - HEADER_SIZE) / cell_size;
+        let max_keys_per_internal = (PAGE_SIZE - HEADER_SIZE) / (4 + key_size);
 
+        let pager = RefCell::new(Pager::new());
+        // Initialize root as empty leaf
+        let root_page = pager.borrow_mut().alloc_page();
+        let cols: Vec<&Column> = columns.values().collect();
+        let empty_leaf = Node::Leaf {
+            parent: None,
+            cells: vec![],
+            next_leaf: None,
+        };
+        // We need to serialize it to the page
+        empty_leaf.serialize(
+            &mut pager.borrow_mut().get_page(root_page).data,
+            key_size,
+            row_size,
+            &cols,
+        );
         Table {
             name,
             columns,
             rows: Cell::new(0),
             row_size,
+            root_page: Cell::new(root_page),
             rows_per_page,
-            pager: RefCell::new(Pager::new()),
+            primary_key_name,
+            key_size,
+            cell_size,
+            max_cells_per_leaf,
+            max_keys_per_internal,
+            pager,
         }
     }
 
     /// Returns only user-defined columns (excludes system columns like _rowid)
     pub fn user_columns(&self) -> impl Iterator<Item = &Column> {
         self.columns.values().filter(|c| !c.name.starts_with('_'))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ordered_float::OrderedFloat;
+
+    fn make_test_table() -> Table {
+        TableBuilder::new("test")
+            .column("name", ColumnType::Varchar(32))
+            .column("age", ColumnType::Number)
+            .build()
+            .unwrap()
+    }
+
+    fn num(n: f64) -> Value {
+        Value::Number(OrderedFloat(n))
+    }
+
+    #[test]
+    fn test_table_builder() {
+        let table = make_test_table();
+        assert_eq!(table.name, "test");
+        assert_eq!(table.columns.len(), 3); // _rowid + name + age
+        assert_eq!(table.primary_key_name, "_rowid");
+    }
+
+    #[test]
+    fn test_table_builder_reserved_column() {
+        let result = TableBuilder::new("test")
+            .column("_secret", ColumnType::Number)
+            .build();
+        assert!(matches!(result, Err(TableError::ReservedColumnName(_))));
+    }
+
+    #[test]
+    fn test_table_builder_duplicate_column() {
+        let result = TableBuilder::new("test")
+            .column("name", ColumnType::Varchar(32))
+            .column("name", ColumnType::Number)
+            .build();
+        assert!(matches!(result, Err(TableError::DuplicateColumn(_))));
+    }
+
+    #[test]
+    fn test_table_builder_no_columns() {
+        let result = TableBuilder::new("test").build();
+        assert!(matches!(result, Err(TableError::NoColumns)));
+    }
+
+    #[test]
+    fn test_serialize_deserialize_row() {
+        let cols = vec![
+            Column::new("id".into(), ColumnType::Number),
+            Column::new("name".into(), ColumnType::Varchar(8)),
+            Column::new("active".into(), ColumnType::Bool),
+        ];
+        let col_refs: Vec<&Column> = cols.iter().collect();
+
+        let values = vec![num(42.0), Value::Varchar("hello".into()), Value::Bool(true)];
+
+        let mut buf = vec![0u8; 17]; // 8 + 8 + 1
+        serialize_row(&values, col_refs.clone(), &mut buf);
+
+        let result = deserialize_row(&col_refs, &buf);
+        assert_eq!(result[0], num(42.0));
+        assert_eq!(result[1], Value::Varchar("hello".into()));
+        assert_eq!(result[2], Value::Bool(true));
+    }
+
+    #[test]
+    fn test_empty_table_start_is_eot() {
+        let table = make_test_table();
+        // Write an empty leaf node to page 0
+        let empty_leaf = Node::Leaf {
+            parent: None,
+            cells: vec![],
+            next_leaf: None,
+        };
+        table.write_node(0, &empty_leaf);
+
+        let cursor = table.start();
+        assert!(cursor.eot);
+        assert_eq!(cursor.cell_num, 0);
+    }
+
+    #[test]
+    fn test_search_empty_table() {
+        let table = make_test_table();
+        let empty_leaf = Node::Leaf {
+            parent: None,
+            cells: vec![],
+            next_leaf: None,
+        };
+        table.write_node(0, &empty_leaf);
+
+        let (cursor, found) = table.search(&num(1.0));
+        assert!(!found);
+        assert!(cursor.eot);
+    }
+
+    #[test]
+    fn test_search_single_leaf() {
+        let table = make_test_table();
+        let leaf = Node::Leaf {
+            parent: None,
+            cells: vec![
+                (
+                    num(1.0),
+                    vec![num(1.0), Value::Varchar("alice".into()), num(30.0)],
+                ),
+                (
+                    num(2.0),
+                    vec![num(2.0), Value::Varchar("bob".into()), num(25.0)],
+                ),
+                (
+                    num(3.0),
+                    vec![num(3.0), Value::Varchar("carol".into()), num(35.0)],
+                ),
+            ],
+            next_leaf: None,
+        };
+        table.write_node(0, &leaf);
+
+        // Search for existing key
+        let (cursor, found) = table.search(&num(2.0));
+        assert!(found);
+        assert_eq!(cursor.cell_num, 1);
+        assert!(!cursor.eot);
+
+        // Search for non-existing key (would be inserted at position 1)
+        let (cursor, found) = table.search(&num(1.5));
+        assert!(!found);
+        assert_eq!(cursor.cell_num, 1);
+
+        // Search for key past end
+        let (cursor, found) = table.search(&num(10.0));
+        assert!(!found);
+        assert!(cursor.eot); // last leaf, past all cells
     }
 }

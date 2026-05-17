@@ -1,6 +1,7 @@
 use crate::sql::ast::*;
 use crate::storage::database::Database;
 use crate::storage::table::{Column, Table};
+use ordered_float::OrderedFloat;
 #[derive(Debug)]
 pub struct BoundInsertStatement<'a> {
     pub values: Vec<Value>,
@@ -92,7 +93,7 @@ mod tests {
 
         let stmt = Statement::Insert(InsertStatement {
             table_name: "users".to_string(),
-            values: vec![Value::Number(1.0)],
+            values: vec![Value::Number(OrderedFloat(1.0))],
         });
 
         let result = bind(stmt, &db);

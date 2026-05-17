@@ -1,5 +1,6 @@
 use crate::sql::ast::Value;
 use crate::storage::Table;
+use crate::tree::Node;
 
 #[derive(Debug)]
 pub enum QueryResult {
@@ -9,23 +10,43 @@ pub enum QueryResult {
 #[derive(Debug)]
 pub struct Cursor<'a> {
     pub table: &'a Table,
-    pub row: usize,
     pub eot: bool,
+    pub page_num: usize,
+    pub cell_num: usize,
 }
 
 impl Cursor<'_> {
     pub fn advance(&mut self) {
-        self.row += 1;
-        self.eot = self.row >= self.table.rows.get();
+        self.cell_num += 1;
+
+        let node = self.read_node();
+        if self.cell_num >= node.num_cells() {
+            match node.next_leaf() {
+                Some(next_page) => {
+                    self.page_num = next_page;
+                    self.cell_num = 0;
+                }
+                None => {
+                    self.eot = true;
+                }
+            }
+        }
     }
 
-    pub fn with_row<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut [u8]) -> R,
-    {
-        let mut pager = self.table.pager.borrow_mut();
-        let page = pager.get_page(self.row / self.table.rows_per_page);
-        let row_offset = (self.row % self.table.rows_per_page) * self.table.row_size;
-        f(&mut page.data[row_offset..row_offset + self.table.row_size])
+    pub fn read_node(&self) -> Node {
+        self.table.read_node(self.page_num)
+    }
+
+    pub fn write_node(&self, node: &Node) {
+        self.table.write_node(self.page_num, node)
+    }
+
+    pub fn shift_cells_right(&self) {
+        self.table.shift_cells_right(self.page_num, self.cell_num)
+    }
+
+    pub fn write_cell(&self, key: &Value, row: &[Value]) {
+        self.table
+            .write_cell(self.page_num, self.cell_num, key, row)
     }
 }

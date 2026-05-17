@@ -28,6 +28,14 @@ impl Pager {
 
         self.pages[page_num].as_mut().unwrap()
     }
+
+    pub fn alloc_page(&mut self) -> usize {
+        let page_num = self.pages.len();
+        self.pages.push(Some(Box::new(Page {
+            data: [0; PAGE_SIZE],
+        })));
+        page_num
+    }
 }
 
 impl Default for Pager {

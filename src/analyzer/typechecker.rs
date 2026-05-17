@@ -1,6 +1,7 @@
 use crate::analyzer::bound::*;
 use crate::sql::ast::{Expression, Operator, Type, Value};
 use crate::storage::{ColumnType, Table};
+use ordered_float::OrderedFloat;
 
 #[derive(Debug, Clone)]
 pub struct TypeError {
@@ -144,7 +145,7 @@ mod tests {
         let table = make_test_table();
         let stmt = BoundInsertStatement {
             table: &table,
-            values: vec![Value::Number(1.0), Value::Varchar("alice".to_string())],
+            values: vec![Value::Number(OrderedFloat(1.0)), Value::Varchar("alice".to_string())],
         };
 
         let result = typecheck_insert(&stmt);
@@ -156,7 +157,7 @@ mod tests {
         let table = make_test_table();
         let stmt = BoundInsertStatement {
             table: &table,
-            values: vec![Value::Number(1.0)], // missing second value
+            values: vec![Value::Number(OrderedFloat(1.0))], // missing second value
         };
 
         let result = typecheck_insert(&stmt);
@@ -184,7 +185,7 @@ mod tests {
         let stmt = BoundInsertStatement {
             table: &table,
             values: vec![
-                Value::Number(1.0),
+                Value::Number(OrderedFloat(1.0)),
                 Value::Varchar("a".repeat(100)), // exceeds Varchar(32)
             ],
         };
@@ -198,7 +199,7 @@ mod tests {
     #[test]
     fn test_typecheck_expr_literal_number() {
         let table = make_test_table();
-        let expr = Expression::Literal(Value::Number(42.0));
+        let expr = Expression::Literal(Value::Number(OrderedFloat(42.0)));
         let result = typecheck_expression(&expr, &table).unwrap();
         assert_eq!(result, Type::Number);
     }
@@ -232,8 +233,8 @@ mod tests {
         let table = make_test_table();
         let expr = Expression::BinaryOp {
             op: Operator::Eq,
-            lhs: Box::new(Expression::Literal(Value::Number(1.0))),
-            rhs: Box::new(Expression::Literal(Value::Number(2.0))),
+            lhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(1.0)))),
+            rhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(2.0)))),
         };
         let result = typecheck_expression(&expr, &table).unwrap();
         assert_eq!(result, Type::Bool);
@@ -244,7 +245,7 @@ mod tests {
         let table = make_test_table();
         let expr = Expression::BinaryOp {
             op: Operator::Eq,
-            lhs: Box::new(Expression::Literal(Value::Number(1.0))),
+            lhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(1.0)))),
             rhs: Box::new(Expression::Literal(Value::Varchar("hello".to_string()))),
         };
         let result = typecheck_expression(&expr, &table);
@@ -256,8 +257,8 @@ mod tests {
         let table = make_test_table();
         let expr = Expression::BinaryOp {
             op: Operator::Add,
-            lhs: Box::new(Expression::Literal(Value::Number(1.0))),
-            rhs: Box::new(Expression::Literal(Value::Number(2.0))),
+            lhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(1.0)))),
+            rhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(2.0)))),
         };
         let result = typecheck_expression(&expr, &table).unwrap();
         assert_eq!(result, Type::Number);
@@ -280,8 +281,8 @@ mod tests {
         let table = make_test_table();
         let expr = Expression::BinaryOp {
             op: Operator::Lt,
-            lhs: Box::new(Expression::Literal(Value::Number(1.0))),
-            rhs: Box::new(Expression::Literal(Value::Number(2.0))),
+            lhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(1.0)))),
+            rhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(2.0)))),
         };
         let result = typecheck_expression(&expr, &table).unwrap();
         assert_eq!(result, Type::Bool);
@@ -316,8 +317,8 @@ mod tests {
         let table = make_test_table();
         let expr = Expression::BinaryOp {
             op: Operator::And,
-            lhs: Box::new(Expression::Literal(Value::Number(1.0))),
-            rhs: Box::new(Expression::Literal(Value::Number(2.0))),
+            lhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(1.0)))),
+            rhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(2.0)))),
         };
         let result = typecheck_expression(&expr, &table);
         assert!(result.is_err());
@@ -330,7 +331,7 @@ mod tests {
         let expr = Expression::BinaryOp {
             op: Operator::Eq,
             lhs: Box::new(Expression::Identifier("id".to_string())),
-            rhs: Box::new(Expression::Literal(Value::Number(42.0))),
+            rhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(42.0)))),
         };
         let result = typecheck_expression(&expr, &table).unwrap();
         assert_eq!(result, Type::Bool);

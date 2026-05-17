@@ -1,5 +1,6 @@
 use super::ast::{Expression, InsertStatement, Operator, SelectStatement, Statement, Value};
 use super::lexer::{Token, TokenType};
+use ordered_float::OrderedFloat;
 
 /// Error type returned when parsing fails.
 #[derive(Debug, Clone)]
@@ -87,7 +88,7 @@ impl<'a> ParserContext<'a> {
                     let value = token.lexeme.parse::<f64>().map_err(|_| ParseError {
                         message: format!("Failed to parse number: {}", token.lexeme),
                     })?;
-                    Ok(Value::Number(value))
+                    Ok(Value::Number(OrderedFloat(value)))
                 }
 
                 TokenType::String => {
@@ -176,7 +177,7 @@ impl<'a> ParserContext<'a> {
                     let value = tok.lexeme.parse::<f64>().map_err(|_| ParseError {
                         message: format!("Failed to parse number: {}", tok.lexeme),
                     })?;
-                    Ok(Expression::Literal(Value::Number(value)))
+                    Ok(Expression::Literal(Value::Number(OrderedFloat(value))))
                 }
                 TokenType::String => {
                     let tok = self.consume().unwrap();

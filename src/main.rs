@@ -3,6 +3,7 @@ mod core;
 mod error;
 mod sql;
 mod storage;
+mod tree;
 mod types;
 
 use error::Error;

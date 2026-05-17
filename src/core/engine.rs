@@ -1,7 +1,9 @@
 use crate::analyzer::bound::*;
 use crate::sql::ast::{Expression, Operator, Value};
 use crate::storage::table::{Column, deserialize_row, serialize_row};
+use crate::tree::Node;
 use crate::types::{Cursor, QueryResult};
+use ordered_float::OrderedFloat;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -103,13 +105,19 @@ pub fn execute_insert(stmt: &BoundInsertStatement) -> Result<u64, EngineError> {
     let rowid = table.rows.get();
 
     // Prepend system columns (_rowid) to user values
-    let mut all_values = vec![Value::Number(rowid as f64)];
+    let mut all_values = vec![Value::Number(OrderedFloat(rowid as f64))];
     all_values.extend(stmt.values.iter().cloned());
 
-    table
-        .end()
-        .with_row(|slot| serialize_row(&all_values, table.columns.values().collect(), slot));
-    table.rows.set(rowid + 1);
+    let primary_key_index = stmt
+        .table
+        .columns
+        .get_index_of(&stmt.table.primary_key_name)
+        .ok_or_else(|| EngineError {
+            message: "Could not find primary key index in table columns".to_string(),
+        })?;
+
+    let key = &all_values[primary_key_index];
+    table.insert(key, &all_values);
     Ok(1)
 }
 
@@ -126,20 +134,27 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, En
         .collect();
 
     let mut results = vec![];
-
     let mut cursor = table.start();
     while !cursor.eot {
-        let values = cursor.with_row(|slot| deserialize_row(&cols, slot));
-        cursor.advance();
+        let node = cursor.read_node();
+        let Node::Leaf { cells, .. } = node else {
+            return Err(EngineError {
+                message: "...".into(),
+            })?;
+        };
 
-        // Build context for eval
-        let row: HashMap<&str, Value> = col_names.iter().copied().zip(values.clone()).collect();
+        let (_, row) = &cells[cursor.cell_num];
+        let values: HashMap<&str, Value> =
+            col_names.iter().copied().zip(row.iter().cloned()).collect();
 
-        // skip non-matching rows (expr is a WHERE clause here)
         if let Some(expr) = &stmt.expr {
-            match eval_expr(expr, &row)? {
+            match eval_expr(expr, &values)? {
                 Value::Bool(true) => {}
-                Value::Bool(false) => continue,
+                Value::Bool(false) => {
+                    cursor.advance();
+                    continue;
+                }
+
                 _ => {
                     return Err(EngineError {
                         message: "WHERE must be bool".into(),
@@ -147,12 +162,10 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, En
                 }
             }
         }
+        cursor.advance();
 
         // Project only requested columns by index
-        let projected: Vec<Value> = projection_indices
-            .iter()
-            .map(|&i| values[i].clone())
-            .collect();
+        let projected: Vec<Value> = projection_indices.iter().map(|&i| row[i].clone()).collect();
         results.push(projected);
     }
 
