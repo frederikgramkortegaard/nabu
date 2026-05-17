@@ -1,11 +1,12 @@
 use super::pager::{PAGE_SIZE, Pager};
-use crate::column::{deserialize_row, serialize_row, Column, ColumnType};
+use crate::column::{Column, ColumnType, deserialize_row, serialize_row};
 use crate::cursor::Cursor;
 use crate::error::Error;
-use crate::node::{Node, HEADER_SIZE};
+use crate::node::{HEADER_SIZE, Node};
 use crate::value::Value;
 use indexmap::IndexMap;
 use std::cell::{Cell, RefCell};
+use std::cmp::Ordering;
 
 #[derive(Debug)]
 pub struct TableBuilder {
@@ -61,6 +62,7 @@ pub struct Table {
     pub row_size: usize,
     pub rows_per_page: usize,
     pub primary_key_name: String,
+    pub primary_key_index: usize,
     pub key_size: usize,
     pub cell_size: usize,
     pub max_cells_per_leaf: usize,
@@ -80,6 +82,10 @@ impl Table {
 
     pub fn get_column(&self, column_name: &str) -> Option<&Column> {
         self.columns.get(column_name)
+    }
+
+    pub fn key_column(&self) -> &Column {
+        self.columns.get_index(self.primary_key_index).unwrap().1
     }
 
     pub fn start<'a>(&'a self) -> Cursor<'a> {
@@ -123,17 +129,13 @@ impl Table {
         }
     }
 
-    pub fn search(&self, key: &Value) -> (Cursor, bool) {
-        let leaf_page = self.leaf_search(self.root_page.get(), key);
+    pub fn search(&self, key: &Value) -> Result<(Cursor<'_>, bool), Error> {
+        let leaf_page = self.leaf_search(self.root_page.get(), key)?;
         let node = self.read_node(leaf_page);
-        let cell = self.cell_search(leaf_page, key);
-        let (cell_num, found) = match cell {
-            Ok(idx) => (idx, true),
-            Err(idx) => (idx, false),
-        };
+        let (cell_num, found) = self.cell_search(leaf_page, key)?;
         let eot = node.next_leaf().is_none() && cell_num >= node.num_cells();
 
-        (
+        Ok((
             Cursor {
                 table: self,
                 eot,
@@ -141,31 +143,54 @@ impl Table {
                 cell_num,
             },
             found,
-        )
+        ))
     }
 
-    pub fn cell_search(&self, page_num: usize, key: &Value) -> Result<usize, usize> {
-        let Node::Leaf { cells, .. } = self.read_node(page_num) else {
-            panic!("cell_search called on non-leaf node")
-        };
+    pub fn cell_search(&self, page_num: usize, key: &Value) -> Result<(usize, bool), Error> {
+        let mut pager = self.pager.borrow_mut();
+        let page = pager.get_page(page_num);
+        if !Node::read_is_leaf(&page.data) {
+            Err(Error::WrongNodeType(
+                "cell_search called on a non-leaf node".into(),
+            ))
+        } else {
+            let num_cells = Node::read_num_cells(&page.data);
+            let mut lo = 0;
+            let mut hi = num_cells;
 
-        cells.binary_search_by(|(pkey, _row)| pkey.cmp(key))
-    }
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                let mid_key = Node::read_key_at(&page.data, mid, self.key_column(), self.row_size)?;
 
-    pub fn leaf_search(&self, page_num: usize, key: &Value) -> usize {
-        let node = self.read_node(page_num);
-        match node {
-            Node::Leaf { .. } => page_num,
-            Node::Internal { keys, children, .. } => {
-                let m = children.len();
-                for i in 0..m {
-                    if key.leq(&keys[i]) {
-                        return self.leaf_search(children[i], key);
-                    }
+                match mid_key.cmp(key) {
+                    Ordering::Less => lo = mid + 1,
+                    Ordering::Greater => hi = mid,
+                    Ordering::Equal => return Ok((mid, true)),
                 }
-
-                self.leaf_search(children[m - 1], key)
             }
+
+            Ok((lo, false)) // insertion point                
+        }
+    }
+
+    pub fn leaf_search(&self, page_num: usize, key: &Value) -> Result<usize, Error> {
+        let mut pager = self.pager.borrow_mut();
+        let page = pager.get_page(page_num);
+        if Node::read_is_leaf(&page.data) {
+            Ok(page_num)
+        } else {
+            let m = Node::read_num_cells(&page.data) + 1;
+            for i in 0..m {
+                let node_key = Node::read_key_at(&page.data, i, self.key_column(), self.row_size)?;
+
+                if key.leq(&node_key) {
+                    let child = Node::read_child_at(&page.data, i, self.key_column())?;
+                    return self.leaf_search(child, key);
+                }
+            }
+
+            let child = Node::read_child_at(&page.data, m - 1, self.key_column())?;
+            self.leaf_search(child, key)
         }
     }
 
@@ -406,19 +431,20 @@ impl Table {
         }
     }
 
-    pub fn delete(&self, key: &Value) {
+    pub fn delete(&self, key: &Value) -> Result<(), Error> {
         //@TODO thsi is the simple approach of not actually doing the re-balancing,
         //as even without re-balancing we still get the logarithmic search property,
         //it is not uncommon to just naively delete
-        let (cursor, found) = self.search(key);
-        if !found {
-            return;
+        let (cursor, found) = self.search(key)?;
+        if found {
+            cursor.with_node_mut(|mut node| {
+                if let Node::Leaf { cells, .. } = &mut node {
+                    cells.remove(cursor.cell_num);
+                };
+            });
         }
-        cursor.with_node_mut(|mut node| {
-            if let Node::Leaf { cells, .. } = &mut node {
-                cells.remove(cursor.cell_num);
-            };
-        });
+
+        Ok(())
     }
 
     pub fn create_new_root(&self, split_key: &Value, left_child: usize, right_child: usize) {
@@ -515,6 +541,7 @@ impl Table {
             root_page: Cell::new(root_page),
             rows_per_page,
             primary_key_name,
+            primary_key_index: 0,
             key_size,
             cell_size,
             max_cells_per_leaf,
@@ -623,7 +650,7 @@ mod tests {
         };
         table.write_node(0, &empty_leaf);
 
-        let (cursor, found) = table.search(&num(1.0));
+        let (cursor, found) = table.search(&num(1.0)).unwrap();
         assert!(!found);
         assert!(cursor.eot);
     }
@@ -652,18 +679,18 @@ mod tests {
         table.write_node(0, &leaf);
 
         // Search for existing key
-        let (cursor, found) = table.search(&num(2.0));
+        let (cursor, found) = table.search(&num(2.0)).unwrap();
         assert!(found);
         assert_eq!(cursor.cell_num, 1);
         assert!(!cursor.eot);
 
         // Search for non-existing key (would be inserted at position 1)
-        let (cursor, found) = table.search(&num(1.5));
+        let (cursor, found) = table.search(&num(1.5)).unwrap();
         assert!(!found);
         assert_eq!(cursor.cell_num, 1);
 
         // Search for key past end
-        let (cursor, found) = table.search(&num(10.0));
+        let (cursor, found) = table.search(&num(10.0)).unwrap();
         assert!(!found);
         assert!(cursor.eot); // last leaf, past all cells
     }

@@ -1,4 +1,4 @@
-use crate::column::{deserialize_row, serialize_row, Column};
+use crate::column::{Column, deserialize_row, serialize_row};
 use crate::error::Error;
 use crate::value::Value;
 
@@ -54,7 +54,7 @@ impl Node {
     }
 
     pub fn read_is_root(src: &[u8]) -> bool {
-        src[1] == 1
+        src[1] == 0
     }
 
     pub fn num_cells(&self) -> usize {
@@ -116,6 +116,67 @@ impl Node {
         } else {
             Some(parent_raw as usize)
         }
+    }
+
+    pub fn read_child_at(src: &[u8], n: usize, key_column: &Column) -> Result<usize, Error> {
+        if Node::read_is_leaf(src) {
+            return Err(Error::WrongNodeType(
+                "read_child_at can only be called on data that belongs to an internal node".into(),
+            ));
+        }
+
+        let num_cells = Self::read_num_cells(src);
+        if n > num_cells {
+            // +1 because there is also a child in the header
+            return Err(Error::OutOfBounds {
+                index: n,
+                len: num_cells,
+            });
+        }
+
+        // The right-most child is stored at src[8..12] for easy traversal, because of that
+        // we need to handle that case specially
+        let smart_src: [u8; 4] = if n == num_cells {
+            src[8..12].try_into().unwrap()
+        } else {
+            let offset = HEADER_SIZE + n * (4 + key_column.column_size);
+            src[offset..offset + 4].try_into().unwrap()
+        };
+
+        let ptr_bytes: [u8; 4] = smart_src;
+        let ptr_raw = u32::from_le_bytes(ptr_bytes);
+        if ptr_raw == 0xffffffff {
+            Err(Error::CorruptedTree(
+                "Internal nodes should never have a NULL child pointer".into(),
+            ))
+        } else {
+            Ok(ptr_raw as usize)
+        }
+    }
+
+    pub fn read_row_at(
+        src: &[u8],
+        n: usize,
+        key_column: &Column,
+        columns: Vec<&Column>,
+        row_size: usize,
+    ) -> Result<Vec<Value>, Error> {
+        if !Node::read_is_leaf(src) {
+            return Err(Error::WrongNodeType(
+                "read_row_at can only be called on leaf nodes".into(),
+            ));
+        }
+
+        let num_cells = Self::read_num_cells(src);
+        if n >= num_cells {
+            return Err(Error::OutOfBounds {
+                index: n,
+                len: num_cells,
+            });
+        }
+
+        let offset = HEADER_SIZE + n * (key_column.column_size + row_size) + key_column.column_size;
+        Ok(deserialize_row(&columns, &src[offset..offset + row_size]))
     }
 
     pub fn read_key_at(
@@ -250,5 +311,275 @@ impl Node {
                 children,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::column::ColumnType;
+    use ordered_float::OrderedFloat;
+
+    fn num(n: f64) -> Value {
+        Value::Number(OrderedFloat(n))
+    }
+
+    fn make_key_column() -> Column {
+        Column::new("id".into(), ColumnType::Number)
+    }
+
+    // Manually build a leaf node header
+    fn make_leaf_header(parent: Option<u32>, num_cells: u16, next_leaf: Option<u32>) -> [u8; 12] {
+        let mut buf = [0u8; 12];
+        buf[0] = 1; // is_leaf = true
+        buf[1] = if parent.is_none() { 0 } else { 1 }; // is_root
+        match parent {
+            Some(p) => buf[2..6].copy_from_slice(&p.to_le_bytes()),
+            None => buf[2..6].fill(0xff),
+        }
+        buf[6..8].copy_from_slice(&num_cells.to_le_bytes());
+        match next_leaf {
+            Some(nl) => buf[8..12].copy_from_slice(&nl.to_le_bytes()),
+            None => buf[8..12].fill(0xff),
+        }
+        buf
+    }
+
+    // Manually build an internal node header
+    fn make_internal_header(parent: Option<u32>, num_cells: u16, right_child: u32) -> [u8; 12] {
+        let mut buf = [0u8; 12];
+        buf[0] = 0; // is_leaf = false
+        buf[1] = if parent.is_none() { 0 } else { 1 };
+        match parent {
+            Some(p) => buf[2..6].copy_from_slice(&p.to_le_bytes()),
+            None => buf[2..6].fill(0xff),
+        }
+        buf[6..8].copy_from_slice(&num_cells.to_le_bytes());
+        buf[8..12].copy_from_slice(&right_child.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn test_read_is_leaf() {
+        let leaf = make_leaf_header(None, 0, None);
+        let internal = make_internal_header(None, 0, 0);
+
+        assert!(Node::read_is_leaf(&leaf));
+        assert!(!Node::read_is_leaf(&internal));
+    }
+
+    #[test]
+    fn test_read_is_root() {
+        let root = make_leaf_header(None, 0, None);
+        let non_root = make_leaf_header(Some(5), 0, None);
+
+        assert!(Node::read_is_root(&root));
+        assert!(!Node::read_is_root(&non_root));
+    }
+
+    #[test]
+    fn test_read_parent() {
+        let root = make_leaf_header(None, 0, None);
+        let child = make_leaf_header(Some(42), 0, None);
+
+        assert_eq!(Node::read_parent(&root), None);
+        assert_eq!(Node::read_parent(&child), Some(42));
+    }
+
+    #[test]
+    fn test_read_num_cells() {
+        let header = make_leaf_header(None, 7, None);
+        assert_eq!(Node::read_num_cells(&header), 7);
+
+        let header2 = make_internal_header(None, 123, 0);
+        assert_eq!(Node::read_num_cells(&header2), 123);
+    }
+
+    #[test]
+    fn test_read_next_leaf() {
+        let with_next = make_leaf_header(None, 0, Some(99));
+        let without_next = make_leaf_header(None, 0, None);
+        let internal = make_internal_header(None, 0, 99);
+
+        assert_eq!(Node::read_next_leaf(&with_next), Some(99));
+        assert_eq!(Node::read_next_leaf(&without_next), None);
+        assert_eq!(Node::read_next_leaf(&internal), None); // internal nodes don't have next_leaf
+    }
+
+    #[test]
+    fn test_read_right_child() {
+        let header = make_internal_header(None, 0, 42);
+        assert_eq!(Node::read_right_child(&header), 42);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_leaf_roundtrip() {
+        let key_col = make_key_column();
+        let cols: Vec<&Column> = vec![&key_col];
+        let key_size = key_col.column_size;
+        let row_size = key_size;
+
+        let node = Node::Leaf {
+            parent: None,
+            cells: vec![
+                (num(1.0), vec![num(1.0)]),
+                (num(2.0), vec![num(2.0)]),
+                (num(3.0), vec![num(3.0)]),
+            ],
+            next_leaf: Some(5),
+        };
+
+        let mut buf = vec![0u8; 1024];
+        node.serialize(&mut buf, key_size, row_size, &cols);
+
+        let deserialized = Node::deserialize(&buf, key_size, row_size, &cols);
+
+        assert!(matches!(deserialized, Node::Leaf { .. }));
+        if let Node::Leaf {
+            parent,
+            cells,
+            next_leaf,
+        } = deserialized
+        {
+            assert_eq!(parent, None);
+            assert_eq!(cells.len(), 3);
+            assert_eq!(next_leaf, Some(5));
+            assert_eq!(cells[0].0, num(1.0));
+            assert_eq!(cells[1].0, num(2.0));
+            assert_eq!(cells[2].0, num(3.0));
+        }
+    }
+
+    #[test]
+    fn test_serialize_deserialize_internal_roundtrip() {
+        let key_col = make_key_column();
+        let cols: Vec<&Column> = vec![&key_col];
+        let key_size = key_col.column_size;
+        let row_size = key_size;
+
+        let node = Node::Internal {
+            parent: Some(0),
+            keys: vec![num(10.0), num(20.0)],
+            children: vec![1, 2, 3],
+        };
+
+        let mut buf = vec![0u8; 1024];
+        node.serialize(&mut buf, key_size, row_size, &cols);
+
+        let deserialized = Node::deserialize(&buf, key_size, row_size, &cols);
+
+        assert!(matches!(deserialized, Node::Internal { .. }));
+        if let Node::Internal {
+            parent,
+            keys,
+            children,
+        } = deserialized
+        {
+            assert_eq!(parent, Some(0));
+            assert_eq!(keys.len(), 2);
+            assert_eq!(children.len(), 3);
+            assert_eq!(keys[0], num(10.0));
+            assert_eq!(keys[1], num(20.0));
+            assert_eq!(children, vec![1, 2, 3]);
+        }
+    }
+
+    #[test]
+    fn test_read_key_at_leaf() {
+        let key_col = make_key_column();
+        let cols: Vec<&Column> = vec![&key_col];
+        let key_size = key_col.column_size;
+        let row_size = key_size;
+
+        let node = Node::Leaf {
+            parent: None,
+            cells: vec![
+                (num(100.0), vec![num(100.0)]),
+                (num(200.0), vec![num(200.0)]),
+            ],
+            next_leaf: None,
+        };
+
+        let mut buf = vec![0u8; 1024];
+        node.serialize(&mut buf, key_size, row_size, &cols);
+
+        assert_eq!(
+            Node::read_key_at(&buf, 0, &key_col, row_size).unwrap(),
+            num(100.0)
+        );
+        assert_eq!(
+            Node::read_key_at(&buf, 1, &key_col, row_size).unwrap(),
+            num(200.0)
+        );
+        assert!(Node::read_key_at(&buf, 2, &key_col, row_size).is_err());
+    }
+
+    #[test]
+    fn test_read_key_at_internal() {
+        let key_col = make_key_column();
+        let cols: Vec<&Column> = vec![&key_col];
+        let key_size = key_col.column_size;
+        let row_size = key_size;
+
+        let node = Node::Internal {
+            parent: None,
+            keys: vec![num(50.0), num(100.0)],
+            children: vec![0, 1, 2],
+        };
+
+        let mut buf = vec![0u8; 1024];
+        node.serialize(&mut buf, key_size, row_size, &cols);
+
+        assert_eq!(
+            Node::read_key_at(&buf, 0, &key_col, row_size).unwrap(),
+            num(50.0)
+        );
+        assert_eq!(
+            Node::read_key_at(&buf, 1, &key_col, row_size).unwrap(),
+            num(100.0)
+        );
+        assert!(Node::read_key_at(&buf, 2, &key_col, row_size).is_err());
+    }
+
+    #[test]
+    fn test_read_child_at() {
+        let key_col = make_key_column();
+        let cols: Vec<&Column> = vec![&key_col];
+        let key_size = key_col.column_size;
+        let row_size = key_size;
+
+        let node = Node::Internal {
+            parent: None,
+            keys: vec![num(50.0), num(100.0)],
+            children: vec![10, 20, 30], // 3 children for 2 keys
+        };
+
+        let mut buf = vec![0u8; 1024];
+        node.serialize(&mut buf, key_size, row_size, &cols);
+
+        assert_eq!(Node::read_child_at(&buf, 0, &key_col).unwrap(), 10);
+        assert_eq!(Node::read_child_at(&buf, 1, &key_col).unwrap(), 20);
+        assert_eq!(Node::read_child_at(&buf, 2, &key_col).unwrap(), 30); // rightmost
+        assert!(Node::read_child_at(&buf, 3, &key_col).is_err()); // out of bounds
+    }
+
+    #[test]
+    fn test_read_child_at_leaf_errors() {
+        let key_col = make_key_column();
+        let cols: Vec<&Column> = vec![&key_col];
+        let key_size = key_col.column_size;
+        let row_size = key_size;
+
+        let node = Node::Leaf {
+            parent: None,
+            cells: vec![(num(1.0), vec![num(1.0)])],
+            next_leaf: None,
+        };
+
+        let mut buf = vec![0u8; 1024];
+        node.serialize(&mut buf, key_size, row_size, &cols);
+
+        // Should error because it's a leaf, not internal
+        assert!(Node::read_child_at(&buf, 0, &key_col).is_err());
     }
 }
