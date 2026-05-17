@@ -16,6 +16,8 @@ use sql::parser::ParserContext;
 use storage::{ColumnType, Database, TableBuilder};
 use types::QueryResult;
 
+use rand::Rng;
+
 fn run_query(db: &Database, query: &str) -> Result<QueryResult, Error> {
     let tokens = LexerContext::lex(query)?;
     let ast = ParserContext::parse(&tokens)?;
@@ -26,39 +28,28 @@ fn run_query(db: &Database, query: &str) -> Result<QueryResult, Error> {
 }
 
 fn main() {
-    let mut mydb = Database::new();
+    let mut mydb = Database::new("test.db").unwrap();
 
-    let table = TableBuilder::new("MyTable")
-        .column("id", ColumnType::Number)
-        .column("age", ColumnType::Number)
-        .column("username", ColumnType::Varchar(32))
-        .column("email", ColumnType::Varchar(256))
-        .build()
-        .unwrap();
-
-    let _ = mydb.add_table(&table);
-
-    let result = run_query(
-        &mydb,
-        "INSERT (1, 25, \"alice\", \"alice@example.com\") INTO MyTable",
-    );
-    println!("{:?}", result);
-    let result = run_query(
-        &mydb,
-        "INSERT (1, 16, \"bob\", \"alice@example.com\") INTO MyTable",
-    );
-    println!("{:?}", result);
-    let result = run_query(
-        &mydb,
-        "SELECT _rowid, id, age, username FROM MyTable where age >= 18",
-    );
-    println!("{:?}", result);
-
-    let result = run_query(&mydb, "DELETE FROM MyTable where age >= 18");
-    println!("{:?}", result);
-    let result = run_query(
-        &mydb,
-        "SELECT _rowid, id, age, username FROM MyTable where age >= 18",
-    );
+    mydb.create_table(
+        TableBuilder::new("MyTable")
+            .column("id", ColumnType::Number)
+            .column("age", ColumnType::Number)
+            .column("username", ColumnType::Varchar(32))
+            .column("email", ColumnType::Varchar(256)),
+    )
+    .unwrap();
+    /*
+    for i in 0..100 {
+        let result = run_query(
+            &mydb,
+            format!(
+                "INSERT ({}, {}, \"alice\", \"alice@example.com\") INTO MyTable",
+                i,
+                rand::random_range(0..=100)
+            )
+            .as_str(),
+        );
+    }*/
+    let result = run_query(&mydb, "SELECT _rowid, id, age, username FROM MyTable ");
     println!("{:?}", result);
 }

@@ -1,3 +1,4 @@
+use crate::error::Error;
 use crate::node::Node;
 use crate::storage::Table;
 use crate::value::Value;
@@ -11,13 +12,13 @@ pub struct Cursor<'a> {
 }
 
 impl Cursor<'_> {
-    pub fn advance(&mut self) {
+    pub fn advance(&mut self) -> Result<(), Error> {
         self.cell_num += 1;
-        self.refresh();
+        self.refresh()
     }
 
-    pub fn refresh(&mut self) {
-        let node = self.read_node();
+    pub fn refresh(&mut self) -> Result<(), Error> {
+        let node = self.read_node()?;
         if self.cell_num >= node.num_cells() {
             match node.next_leaf() {
                 Some(next_page) => {
@@ -29,35 +30,36 @@ impl Cursor<'_> {
                 }
             }
         }
+        Ok(())
     }
 
-    pub fn read_node(&self) -> Node {
+    pub fn read_node(&self) -> Result<Node, Error> {
         self.table.read_node(self.page_num)
     }
 
-    pub fn write_node(&self, node: &Node) {
+    pub fn write_node(&self, node: &Node) -> Result<(), Error> {
         self.table.write_node(self.page_num, node)
     }
 
-    pub fn shift_cells_right(&self) {
+    pub fn shift_cells_right(&self) -> Result<(), Error> {
         self.table.shift_cells_right(self.page_num, self.cell_num)
     }
 
-    pub fn write_cell(&self, key: &Value, row: &[Value]) {
+    pub fn write_cell(&self, key: &Value, row: &[Value]) -> Result<(), Error> {
         self.table
             .write_cell(self.page_num, self.cell_num, key, row)
     }
 
-    pub fn with_node<F, R>(&self, f: F) -> R
+    pub fn with_node<F, R>(&self, f: F) -> Result<R, Error>
     where
-        F: FnOnce(&Node) -> R,
+        F: FnOnce(&Node) -> Result<R, Error>,
     {
         self.table.with_node(self.page_num, f)
     }
 
-    pub fn with_node_mut<F, R>(&self, f: F) -> R
+    pub fn with_node_mut<F, R>(&self, f: F) -> Result<R, Error>
     where
-        F: FnOnce(&mut Node) -> R,
+        F: FnOnce(&mut Node) -> Result<R, Error>,
     {
         self.table.with_node_mut(self.page_num, f)
     }

@@ -1,7 +1,9 @@
 use crate::value::Type;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Error {
+    Io(std::io::Error),
+
     // Lexer
     UnterminatedString {
         row: usize,
@@ -61,4 +63,9 @@ pub enum Error {
     // Engine
     ColumnNotInRow(String),
     DivisionByZero,
+}
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Error::Io(err)
+    }
 }

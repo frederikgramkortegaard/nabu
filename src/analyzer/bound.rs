@@ -86,17 +86,14 @@ pub fn bind<'a>(stmt: Statement, db: &'a Database) -> Result<BoundStatement<'a>,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{ColumnType, Table};
+    use crate::storage::{ColumnType, TableBuilder};
     use ordered_float::OrderedFloat;
 
     #[test]
     fn test_bind_insert_success() {
-        let table = Table::new(
-            "users".to_string(),
-            [("id".to_string(), ColumnType::Number)],
-        );
-        let mut db = Database::new();
-        db.add_table(&table).unwrap();
+        let mut db = Database::memory();
+        db.create_table(TableBuilder::new("users").column("id", ColumnType::Number))
+            .unwrap();
 
         let stmt = Statement::Insert(InsertStatement {
             table_name: "users".to_string(),
@@ -109,7 +106,7 @@ mod tests {
 
     #[test]
     fn test_bind_insert_table_not_found() {
-        let db = Database::new();
+        let db = Database::memory();
 
         let stmt = Statement::Insert(InsertStatement {
             table_name: "nonexistent".to_string(),

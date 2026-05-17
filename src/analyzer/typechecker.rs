@@ -121,17 +121,22 @@ pub fn typecheck(stmt: &BoundStatement) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::pager::Pager;
     use crate::storage::{ColumnType, Table};
     use ordered_float::OrderedFloat;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     fn make_test_table() -> Table {
+        let pager = Rc::new(RefCell::new(Pager::memory()));
         Table::new(
             "users".to_string(),
             [
                 ("id".to_string(), ColumnType::Number),
                 ("name".to_string(), ColumnType::Varchar(32)),
             ],
-        )
+            pager,
+        ).unwrap()
     }
 
     #[test]

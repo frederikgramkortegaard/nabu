@@ -122,14 +122,14 @@ pub fn execute_insert(stmt: &BoundInsertStatement) -> Result<u64, Error> {
         .ok_or_else(|| Error::ColumnNotFound(stmt.table.primary_key_name.clone()))?;
 
     let key = &all_values[primary_key_index];
-    table.insert(key, &all_values);
+    table.insert(key, &all_values)?;
     Ok(1)
 }
 pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, Error> {
     let table = stmt.table;
 
     let mut results = 0;
-    let mut cursor = table.start();
+    let mut cursor = table.start()?;
     let primary_key_index = stmt
         .table
         .columns
@@ -138,7 +138,7 @@ pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, Error> {
     let cols: Vec<&Column> = table.columns.values().collect();
     let col_names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
     while !cursor.eot {
-        let node = cursor.read_node();
+        let node = cursor.read_node()?;
         let Node::Leaf { cells, .. } = node else {
             unreachable!("cursor should always point to a leaf node")
         };
@@ -151,7 +151,7 @@ pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, Error> {
             match eval_expr(expr, &values)? {
                 Value::Bool(true) => {}
                 Value::Bool(false) => {
-                    cursor.advance();
+                    cursor.advance()?;
                     continue;
                 }
                 other => {
@@ -164,7 +164,7 @@ pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, Error> {
         }
         let key = &row[primary_key_index];
         table.delete(key)?;
-        cursor.refresh();
+        cursor.refresh()?;
         results += 1;
     }
 
@@ -184,9 +184,9 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, Er
         .collect();
 
     let mut results = vec![];
-    let mut cursor = table.start();
+    let mut cursor = table.start()?;
     while !cursor.eot {
-        let node = cursor.read_node();
+        let node = cursor.read_node()?;
         let Node::Leaf { cells, .. } = node else {
             unreachable!("cursor should always point to a leaf node")
         };
@@ -199,7 +199,7 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, Er
             match eval_expr(expr, &values)? {
                 Value::Bool(true) => {}
                 Value::Bool(false) => {
-                    cursor.advance();
+                    cursor.advance()?;
                     continue;
                 }
                 other => {
@@ -210,7 +210,7 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, Er
                 }
             }
         }
-        cursor.advance();
+        cursor.advance()?;
 
         // Project only requested columns by index
         let projected: Vec<Value> = projection_indices.iter().map(|&i| row[i].clone()).collect();
