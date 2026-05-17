@@ -4,4 +4,4 @@ pub mod table;
 
 pub use crate::column::{Column, ColumnType};
 pub use database::Database;
-pub use table::{Table, TableBuilder, TableError};
+pub use table::{Table, TableBuilder};

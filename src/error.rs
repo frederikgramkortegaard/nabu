@@ -1,60 +1,35 @@
-use crate::analyzer::bound::BindingError;
-use crate::analyzer::typechecker::TypeError;
-use crate::core::engine::EngineError;
-use crate::sql::lexer::LexError;
-use crate::sql::parser::ParseError;
-use crate::storage::database::DatabaseError;
-use crate::storage::table::TableError;
+use crate::value::Type;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Error {
-    Lex(LexError),
-    Parse(ParseError),
-    Binding(BindingError),
-    Type(TypeError),
-    Engine(EngineError),
-    Database(DatabaseError),
-    Table(TableError),
-}
+    // Lexer
+    UnterminatedString { row: usize, col: usize },
+    InvalidCharacter { ch: char, row: usize, col: usize },
 
-impl From<LexError> for Error {
-    fn from(e: LexError) -> Self {
-        Error::Lex(e)
-    }
-}
+    // Parser
+    UnexpectedToken { expected: String, got: String, row: usize, col: usize },
+    UnexpectedEof { expected: String },
+    Parse(String), // catch-all for parser errors
 
-impl From<ParseError> for Error {
-    fn from(e: ParseError) -> Self {
-        Error::Parse(e)
-    }
-}
+    // Binding
+    TableNotFound(String),
+    ColumnNotFound(String),
 
-impl From<BindingError> for Error {
-    fn from(e: BindingError) -> Self {
-        Error::Binding(e)
-    }
-}
+    // Type checking
+    TypeMismatch { expected: Type, got: Type },
+    WrongColumnCount { expected: usize, got: usize },
+    VarcharTooLong { max: usize, got: usize },
 
-impl From<TypeError> for Error {
-    fn from(e: TypeError) -> Self {
-        Error::Type(e)
-    }
-}
+    // Table
+    ReservedColumnName(String),
+    DuplicateColumn(String),
+    NoColumns,
+    DuplicateTable(String),
 
-impl From<EngineError> for Error {
-    fn from(e: EngineError) -> Self {
-        Error::Engine(e)
-    }
-}
+    // Data access
+    OutOfBounds { index: usize, len: usize },
 
-impl From<DatabaseError> for Error {
-    fn from(e: DatabaseError) -> Self {
-        Error::Database(e)
-    }
-}
-
-impl From<TableError> for Error {
-    fn from(e: TableError) -> Self {
-        Error::Table(e)
-    }
+    // Engine
+    ColumnNotInRow(String),
+    DivisionByZero,
 }

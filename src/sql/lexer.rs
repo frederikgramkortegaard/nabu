@@ -1,3 +1,5 @@
+use crate::error::Error;
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum TokenType {
     // End of file
@@ -41,14 +43,6 @@ pub enum TokenType {
     GreaterEqual, // >=
     And,          // &&
     Or,           // ||
-}
-
-/// Error type returned when lexing fails.
-#[derive(Debug, Clone)]
-pub struct LexError {
-    pub message: String,
-    pub row: usize,
-    pub column: usize,
 }
 
 /// A single token with its type, lexeme, and source location.
@@ -189,13 +183,13 @@ impl LexerContext {
     /// - Comments: lines starting with #
     ///
     /// # Errors
-    /// Returns a `LexError` if an unexpected character is encountered.
+    /// Returns an `Error` if an unexpected character is encountered.
     ///
     /// # Example
     /// ```ignore
     /// let tokens = LexerContext::lex("fn foo(x: f64) -> f64 { return x + 1; }")?;
     /// ```
-    pub fn lex(input: &str) -> Result<Vec<Token>, LexError> {
+    pub fn lex(input: &str) -> Result<Vec<Token>, Error> {
         let mut lexer = LexerContext {
             tokens: Vec::new(),
             row: 0,
@@ -266,20 +260,18 @@ impl LexerContext {
                         break;
                     }
                     if next_c == '\n' {
-                        return Err(LexError {
-                            message: "Unterminated string literal".to_string(),
+                        return Err(Error::UnterminatedString {
                             row: lexer.row + 1,
-                            column: lexer.column + 1,
+                            col: lexer.column + 1,
                         });
                     }
                     lexer.advance();
                 }
 
                 if lexer.peek(0) != Some('"') {
-                    return Err(LexError {
-                        message: "Unterminated string literal".to_string(),
+                    return Err(Error::UnterminatedString {
                         row: lexer.row + 1,
-                        column: lexer.column + 1,
+                        col: lexer.column + 1,
                     });
                 }
 
@@ -319,10 +311,10 @@ impl LexerContext {
             }
 
             // Unknown character - error
-            return Err(LexError {
-                message: format!("Unexpected character '{}'", c),
+            return Err(Error::InvalidCharacter {
+                ch: c,
                 row: lexer.row + 1,
-                column: lexer.column + 1,
+                col: lexer.column + 1,
             });
         }
 

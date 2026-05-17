@@ -1,7 +1,7 @@
 use crate::column::Column;
+use crate::error::Error;
 use crate::sql::ast::*;
 use crate::storage::{Database, Table};
-use ordered_float::OrderedFloat;
 #[derive(Debug)]
 pub struct BoundInsertStatement<'a> {
     pub values: Vec<Value>,
@@ -27,20 +27,13 @@ pub enum BoundStatement<'a> {
     Delete(BoundDeleteStatement<'a>),
 }
 
-#[derive(Debug)]
-pub struct BindingError {
-    message: String,
-}
-
 fn bind_insert<'a>(
     stmt: InsertStatement,
     db: &'a Database,
-) -> Result<BoundStatement<'a>, BindingError> {
+) -> Result<BoundStatement<'a>, Error> {
     let table = db
         .get_table(stmt.table_name.as_str())
-        .ok_or_else(|| BindingError {
-            message: format!("table '{:?}' does not exist", stmt.table_name),
-        })?;
+        .ok_or_else(|| Error::TableNotFound(stmt.table_name.clone()))?;
 
     Ok(BoundStatement::Insert(BoundInsertStatement {
         values: stmt.values,
@@ -51,21 +44,14 @@ fn bind_insert<'a>(
 fn bind_select<'a>(
     stmt: SelectStatement,
     db: &'a Database,
-) -> Result<BoundStatement<'a>, BindingError> {
+) -> Result<BoundStatement<'a>, Error> {
     let table = db
         .get_table(stmt.table.as_str())
-        .ok_or_else(|| BindingError {
-            message: format!("table '{:?}' does not exist", stmt.table),
-        })?;
+        .ok_or_else(|| Error::TableNotFound(stmt.table.clone()))?;
 
     let mut columns: Vec<&Column> = vec![];
     for column_name in stmt.columns {
-        let col = table.get_column(&column_name).ok_or_else(|| BindingError {
-            message: format!(
-                "coumn '{:?}' does not exist on table '{:?}'",
-                column_name, table.name
-            ),
-        })?;
+        let col = table.get_column(&column_name).ok_or_else(|| Error::ColumnNotFound(column_name.clone()))?;
 
         columns.push(col);
     }
@@ -79,19 +65,17 @@ fn bind_select<'a>(
 fn bind_delete<'a>(
     stmt: DeleteStatement,
     db: &'a Database,
-) -> Result<BoundStatement<'a>, BindingError> {
+) -> Result<BoundStatement<'a>, Error> {
     let table = db
         .get_table(stmt.table.as_str())
-        .ok_or_else(|| BindingError {
-            message: format!("table '{:?}' does not exist", stmt.table),
-        })?;
+        .ok_or_else(|| Error::TableNotFound(stmt.table.clone()))?;
 
     Ok(BoundStatement::Delete(BoundDeleteStatement {
         table,
         expr: stmt.expr,
     }))
 }
-pub fn bind<'a>(stmt: Statement, db: &'a Database) -> Result<BoundStatement<'a>, BindingError> {
+pub fn bind<'a>(stmt: Statement, db: &'a Database) -> Result<BoundStatement<'a>, Error> {
     match stmt {
         Statement::Insert(s) => bind_insert(s, db),
         Statement::Select(s) => bind_select(s, db),
@@ -103,6 +87,7 @@ pub fn bind<'a>(stmt: Statement, db: &'a Database) -> Result<BoundStatement<'a>,
 mod tests {
     use super::*;
     use crate::storage::{ColumnType, Table};
+    use ordered_float::OrderedFloat;
 
     #[test]
     fn test_bind_insert_success() {

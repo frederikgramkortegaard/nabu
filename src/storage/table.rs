@@ -1,23 +1,17 @@
 use super::pager::{PAGE_SIZE, Pager};
 use crate::column::{deserialize_row, serialize_row, Column, ColumnType};
 use crate::cursor::Cursor;
+use crate::error::Error;
 use crate::node::{Node, HEADER_SIZE};
 use crate::value::Value;
 use indexmap::IndexMap;
 use std::cell::{Cell, RefCell};
 
 #[derive(Debug)]
-pub enum TableError {
-    ReservedColumnName(String),
-    DuplicateColumn(String),
-    NoColumns,
-}
-
-#[derive(Debug)]
 pub struct TableBuilder {
     name: String,
     columns: IndexMap<String, Column>,
-    error: Option<TableError>,
+    error: Option<Error>,
 }
 
 impl TableBuilder {
@@ -35,11 +29,11 @@ impl TableBuilder {
         }
         let name = name.into();
         if name.starts_with('_') {
-            self.error = Some(TableError::ReservedColumnName(name));
+            self.error = Some(Error::ReservedColumnName(name));
             return self;
         }
         if self.columns.contains_key(&name) {
-            self.error = Some(TableError::DuplicateColumn(name));
+            self.error = Some(Error::DuplicateColumn(name));
             return self;
         }
         self.columns
@@ -47,12 +41,12 @@ impl TableBuilder {
         self
     }
 
-    pub fn build(self) -> Result<Table, TableError> {
+    pub fn build(self) -> Result<Table, Error> {
         if let Some(e) = self.error {
             return Err(e);
         }
         if self.columns.is_empty() {
-            return Err(TableError::NoColumns);
+            return Err(Error::NoColumns);
         }
         Ok(Table::from_columns(self.name, self.columns))
     }
@@ -565,7 +559,7 @@ mod tests {
         let result = TableBuilder::new("test")
             .column("_secret", ColumnType::Number)
             .build();
-        assert!(matches!(result, Err(TableError::ReservedColumnName(_))));
+        assert!(matches!(result, Err(Error::ReservedColumnName(_))));
     }
 
     #[test]
@@ -574,13 +568,13 @@ mod tests {
             .column("name", ColumnType::Varchar(32))
             .column("name", ColumnType::Number)
             .build();
-        assert!(matches!(result, Err(TableError::DuplicateColumn(_))));
+        assert!(matches!(result, Err(Error::DuplicateColumn(_))));
     }
 
     #[test]
     fn test_table_builder_no_columns() {
         let result = TableBuilder::new("test").build();
-        assert!(matches!(result, Err(TableError::NoColumns)));
+        assert!(matches!(result, Err(Error::NoColumns)));
     }
 
     #[test]

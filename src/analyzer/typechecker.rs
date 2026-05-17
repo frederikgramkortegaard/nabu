@@ -1,14 +1,9 @@
 use crate::analyzer::bound::*;
 use crate::column::ColumnType;
+use crate::error::Error;
 use crate::sql::ast::{Expression, Operator};
 use crate::storage::Table;
 use crate::value::{Type, Value};
-use ordered_float::OrderedFloat;
-
-#[derive(Debug, Clone)]
-pub struct TypeError {
-    pub message: String,
-}
 
 fn is_compatible_value(value: &Value, target: ColumnType) -> bool {
     match (value, target) {
@@ -19,41 +14,36 @@ fn is_compatible_value(value: &Value, target: ColumnType) -> bool {
     }
 }
 
-fn typecheck_insert(stmt: &BoundInsertStatement) -> Result<(), TypeError> {
+fn typecheck_insert(stmt: &BoundInsertStatement) -> Result<(), Error> {
     let BoundInsertStatement { values, table } = stmt;
     let user_columns: Vec<_> = table.user_columns().collect();
 
     if values.len() != user_columns.len() {
-        return Err(TypeError {
-            message: format!(
-                "expected {} values, got {}",
-                user_columns.len(),
-                values.len()
-            ),
+        return Err(Error::WrongColumnCount {
+            expected: user_columns.len(),
+            got: values.len(),
         });
     }
 
     for (v, c) in std::iter::zip(values, user_columns) {
         if !is_compatible_value(v, c.column_type) {
-            return Err(TypeError {
-                message: format!(
-                    "Attempted to insert value of type '{:?}' into column '{:?}' of type '{:?}'",
-                    v, c.name, c.column_type
-                ),
+            return Err(Error::TypeMismatch {
+                expected: c.column_type.to_type(),
+                got: v.typ(),
             });
         }
     }
 
     Ok(())
 }
-fn typecheck_select(stmt: &BoundSelectStatement) -> Result<(), TypeError> {
+fn typecheck_select(stmt: &BoundSelectStatement) -> Result<(), Error> {
     // Since this is already bound, we don't need to validate columns or table really.
     if let Some(expr) = &stmt.expr {
         typecheck_expression(expr, stmt.table)?;
     }
     Ok(())
 }
-fn typecheck_delete(stmt: &BoundDeleteStatement) -> Result<(), TypeError> {
+fn typecheck_delete(stmt: &BoundDeleteStatement) -> Result<(), Error> {
     // Since this is already bound, we don't need to validate table really.
     if let Some(expr) = &stmt.expr {
         typecheck_expression(expr, stmt.table)?;
@@ -62,15 +52,13 @@ fn typecheck_delete(stmt: &BoundDeleteStatement) -> Result<(), TypeError> {
 }
 
 // Returns the type that an expression evaluates to
-fn typecheck_expression(expr: &Expression, table: &Table) -> Result<Type, TypeError> {
+fn typecheck_expression(expr: &Expression, table: &Table) -> Result<Type, Error> {
     match expr {
         Expression::Literal(value) => Ok(value.typ()),
         Expression::Identifier(name) => table
             .get_column(name)
             .map(|col| col.column_type.to_type())
-            .ok_or_else(|| TypeError {
-                message: format!("Unknown column: {}", name),
-            }),
+            .ok_or_else(|| Error::ColumnNotFound(name.clone())),
         Expression::BinaryOp { op, lhs, rhs } => {
             let lhs_type = typecheck_expression(lhs, table)?;
             let rhs_type = typecheck_expression(rhs, table)?;
@@ -79,8 +67,9 @@ fn typecheck_expression(expr: &Expression, table: &Table) -> Result<Type, TypeEr
                 // Equality: any types, but must match
                 Operator::Eq | Operator::Neq => {
                     if lhs_type != rhs_type {
-                        return Err(TypeError {
-                            message: format!("Cannot compare {:?} with {:?}", lhs_type, rhs_type),
+                        return Err(Error::TypeMismatch {
+                            expected: lhs_type,
+                            got: rhs_type,
                         });
                     }
                     Ok(Type::Bool)
@@ -90,11 +79,9 @@ fn typecheck_expression(expr: &Expression, table: &Table) -> Result<Type, TypeEr
                 Operator::Lt | Operator::Gt | Operator::Leq | Operator::Geq => {
                     match (&lhs_type, &rhs_type) {
                         (Type::Number, Type::Number) => Ok(Type::Bool),
-                        _ => Err(TypeError {
-                            message: format!(
-                                "Cannot use ordering operator on {:?} and {:?}",
-                                lhs_type, rhs_type
-                            ),
+                        _ => Err(Error::TypeMismatch {
+                            expected: Type::Number,
+                            got: lhs_type,
                         }),
                     }
                 }
@@ -103,11 +90,9 @@ fn typecheck_expression(expr: &Expression, table: &Table) -> Result<Type, TypeEr
                 Operator::Add | Operator::Sub | Operator::Mul | Operator::Div => {
                     match (&lhs_type, &rhs_type) {
                         (Type::Number, Type::Number) => Ok(Type::Number),
-                        _ => Err(TypeError {
-                            message: format!(
-                                "Cannot use arithmetic operator on {:?} and {:?}",
-                                lhs_type, rhs_type
-                            ),
+                        _ => Err(Error::TypeMismatch {
+                            expected: Type::Number,
+                            got: lhs_type,
                         }),
                     }
                 }
@@ -115,11 +100,9 @@ fn typecheck_expression(expr: &Expression, table: &Table) -> Result<Type, TypeEr
                 // Logical: bools only
                 Operator::And | Operator::Or => match (&lhs_type, &rhs_type) {
                     (Type::Bool, Type::Bool) => Ok(Type::Bool),
-                    _ => Err(TypeError {
-                        message: format!(
-                            "Cannot use logical operator on {:?} and {:?}",
-                            lhs_type, rhs_type
-                        ),
+                    _ => Err(Error::TypeMismatch {
+                        expected: Type::Bool,
+                        got: lhs_type,
                     }),
                 },
             }
@@ -127,7 +110,7 @@ fn typecheck_expression(expr: &Expression, table: &Table) -> Result<Type, TypeEr
     }
 }
 
-pub fn typecheck(stmt: &BoundStatement) -> Result<(), TypeError> {
+pub fn typecheck(stmt: &BoundStatement) -> Result<(), Error> {
     match stmt {
         BoundStatement::Insert(s) => typecheck_insert(s),
         BoundStatement::Select(s) => typecheck_select(s),
@@ -139,6 +122,7 @@ pub fn typecheck(stmt: &BoundStatement) -> Result<(), TypeError> {
 mod tests {
     use super::*;
     use crate::storage::{ColumnType, Table};
+    use ordered_float::OrderedFloat;
 
     fn make_test_table() -> Table {
         Table::new(

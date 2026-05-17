@@ -2,13 +2,8 @@ use super::ast::{
     DeleteStatement, Expression, InsertStatement, Operator, SelectStatement, Statement, Value,
 };
 use super::lexer::{Token, TokenType};
+use crate::error::Error;
 use ordered_float::OrderedFloat;
-
-/// Error type returned when parsing fails.
-#[derive(Debug, Clone)]
-pub struct ParseError {
-    pub message: String,
-}
 
 /// The parser context that maintains state during parsing.
 #[derive(Debug, Clone)]
@@ -43,18 +38,17 @@ impl<'a> ParserContext<'a> {
         &mut self,
         expected_type: TokenType,
         message: String,
-    ) -> Result<Token, ParseError> {
+    ) -> Result<Token, Error> {
         match self.consume() {
             Some(tok) if tok.tag == expected_type => Ok(tok),
-            Some(tok) => Err(ParseError {
-                message: format!(
-                    "{} at {}:{} (got {:?})",
-                    message, tok.row, tok.column, tok.tag
-                ),
-            }),
-            None => Err(ParseError {
-                message: format!("{} (unexpected end of input)", message),
-            }),
+            Some(tok) => Err(Error::Parse(format!(
+                "{} at {}:{} (got {:?})",
+                message, tok.row, tok.column, tok.tag
+            ))),
+            None => Err(Error::Parse(format!(
+                "{} (unexpected end of input)",
+                message
+            ))),
         }
     }
 
@@ -73,7 +67,7 @@ impl<'a> ParserContext<'a> {
         }
     }
 
-    fn parse_primary(&mut self) -> Result<Value, ParseError> {
+    fn parse_primary(&mut self) -> Result<Value, Error> {
         match self.peek() {
             Some(token) => match token.tag {
                 // Parenthesized expression
@@ -87,9 +81,7 @@ impl<'a> ParserContext<'a> {
                 // Number literal
                 TokenType::Number => {
                     let token = self.consume().expect("token verified by peek");
-                    let value = token.lexeme.parse::<f64>().map_err(|_| ParseError {
-                        message: format!("Failed to parse number: {}", token.lexeme),
-                    })?;
+                    let value = token.lexeme.parse::<f64>().map_err(|_| Error::Parse(format!("Failed to parse number: {}", token.lexeme)))?;
                     Ok(Value::Number(OrderedFloat(value)))
                 }
 
@@ -111,17 +103,13 @@ impl<'a> ParserContext<'a> {
                     Ok(Value::Bool(false))
                 }
 
-                _ => Err(ParseError {
-                    message: format!("Unexpected token in expression: {:?}", token.tag),
-                }),
+                _ => Err(Error::Parse(format!("Unexpected token in expression: {:?}", token.tag))),
             },
-            None => Err(ParseError {
-                message: "Unexpected end of input in expression".to_string(),
-            }),
+            None => Err(Error::Parse("Unexpected end of input in expression".to_string())),
         }
     }
 
-    fn parse_values(&mut self) -> Result<Vec<Value>, ParseError> {
+    fn parse_values(&mut self) -> Result<Vec<Value>, Error> {
         self.consume_optional(TokenType::LParen);
 
         let mut vals: Vec<Value> = vec![];
@@ -168,7 +156,7 @@ impl<'a> ParserContext<'a> {
         }
     }
 
-    fn parse_expr_primary(&mut self) -> Result<Expression, ParseError> {
+    fn parse_expr_primary(&mut self) -> Result<Expression, Error> {
         match self.peek() {
             Some(token) => match token.tag {
                 TokenType::LParen => {
@@ -179,9 +167,7 @@ impl<'a> ParserContext<'a> {
                 }
                 TokenType::Number => {
                     let tok = self.consume().unwrap();
-                    let value = tok.lexeme.parse::<f64>().map_err(|_| ParseError {
-                        message: format!("Failed to parse number: {}", tok.lexeme),
-                    })?;
+                    let value = tok.lexeme.parse::<f64>().map_err(|_| Error::Parse(format!("Failed to parse number: {}", tok.lexeme)))?;
                     Ok(Expression::Literal(Value::Number(OrderedFloat(value))))
                 }
                 TokenType::String => {
@@ -200,17 +186,13 @@ impl<'a> ParserContext<'a> {
                     let tok = self.consume().unwrap();
                     Ok(Expression::Identifier(tok.lexeme))
                 }
-                _ => Err(ParseError {
-                    message: format!("Unexpected token in expression: {:?}", token.tag),
-                }),
+                _ => Err(Error::Parse(format!("Unexpected token in expression: {:?}", token.tag))),
             },
-            None => Err(ParseError {
-                message: "Unexpected end of input in expression".into(),
-            }),
+            None => Err(Error::Parse("Unexpected end of input in expression".into())),
         }
     }
 
-    fn parse_expression_prec(&mut self, min_prec: i8) -> Result<Expression, ParseError> {
+    fn parse_expression_prec(&mut self, min_prec: i8) -> Result<Expression, Error> {
         let mut lhs = self.parse_expr_primary()?;
 
         loop {
@@ -226,9 +208,7 @@ impl<'a> ParserContext<'a> {
             let op_tok = self.consume().unwrap();
             let op = self
                 .token_to_operator(&op_tok.tag)
-                .ok_or_else(|| ParseError {
-                    message: format!("Unknown operator: {:?}", op_tok.tag),
-                })?;
+                .ok_or_else(|| Error::Parse(format!("Unknown operator: {:?}", op_tok.tag)))?;
 
             let rhs = self.parse_expression_prec(prec + 1)?;
 
@@ -242,11 +222,11 @@ impl<'a> ParserContext<'a> {
         Ok(lhs)
     }
 
-    fn parse_expression(&mut self) -> Result<Expression, ParseError> {
+    fn parse_expression(&mut self) -> Result<Expression, Error> {
         self.parse_expression_prec(0)
     }
 
-    fn parse_statement(&mut self) -> Result<Statement, ParseError> {
+    fn parse_statement(&mut self) -> Result<Statement, Error> {
         match self.peek() {
             Some(token) => match token.tag {
                 TokenType::Select => {
@@ -262,9 +242,7 @@ impl<'a> ParserContext<'a> {
                     self.consume_optional(TokenType::RParen);
                     self.consume_assert(TokenType::From, "Expected FROM after SELECT".to_string())?;
 
-                    let table = self.consume_identifier().ok_or_else(|| ParseError {
-                        message: "Expected table name after FROM".to_string(),
-                    })?;
+                    let table = self.consume_identifier().ok_or_else(|| Error::Parse("Expected table name after FROM".to_string()))?;
 
                     let expr = if self.consume_optional(TokenType::Where).is_some() {
                         Some(Box::new(self.parse_expression()?))
@@ -285,9 +263,7 @@ impl<'a> ParserContext<'a> {
 
                     self.consume_assert(TokenType::From, "Expected FROM after SELECT".to_string())?;
 
-                    let table = self.consume_identifier().ok_or_else(|| ParseError {
-                        message: "Expected table name after FROM".to_string(),
-                    })?;
+                    let table = self.consume_identifier().ok_or_else(|| Error::Parse("Expected table name after FROM".to_string()))?;
 
                     let expr = if self.consume_optional(TokenType::Where).is_some() {
                         Some(Box::new(self.parse_expression()?))
@@ -307,27 +283,20 @@ impl<'a> ParserContext<'a> {
                     let table_name = match self.parse_primary() {
                         Ok(Value::Varchar(name)) => Ok(name),
                         Err(e) => Err(e),
-                        _ => Err(ParseError {
-                            message: "Failed to parse 'TABLE' name in 'INSERT' statement"
-                                .to_string(),
-                        }),
+                        _ => Err(Error::Parse("Failed to parse 'TABLE' name in 'INSERT' statement".to_string())),
                     }?;
 
                     Ok(Statement::Insert(InsertStatement { values, table_name }))
                 }
 
-                _ => Err(ParseError {
-                    message: format!("Unexpected token: {:?}", token.tag),
-                }),
+                _ => Err(Error::Parse(format!("Unexpected token: {:?}", token.tag))),
             },
 
-            None => Err(ParseError {
-                message: "Unexpected end of input".to_string(),
-            }),
+            None => Err(Error::Parse("Unexpected end of input".to_string())),
         }
     }
 
-    pub fn parse(tokens: &'a Vec<Token>) -> Result<Statement, ParseError> {
+    pub fn parse(tokens: &'a Vec<Token>) -> Result<Statement, Error> {
         let mut parser = ParserContext {
             tokens,
             position: 0,
@@ -343,7 +312,7 @@ mod tests {
     use super::*;
     use crate::sql::lexer::LexerContext;
 
-    fn parse_expr(input: &str) -> Result<Expression, ParseError> {
+    fn parse_expr(input: &str) -> Result<Expression, Error> {
         let tokens = LexerContext::lex(input).unwrap();
         let mut parser = ParserContext {
             tokens: &tokens,

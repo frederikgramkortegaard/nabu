@@ -1,25 +1,19 @@
 use crate::analyzer::bound::*;
 use crate::column::Column;
+use crate::error::Error;
 use crate::node::Node;
 use crate::sql::ast::{Expression, Operator};
 use crate::types::QueryResult;
-use crate::value::Value;
+use crate::value::{Type, Value};
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
-pub struct EngineError {
-    pub message: String,
-}
-
-fn eval_expr(expr: &Expression, row: &HashMap<&str, Value>) -> Result<Value, EngineError> {
+fn eval_expr(expr: &Expression, row: &HashMap<&str, Value>) -> Result<Value, Error> {
     match expr {
         Expression::Literal(v) => Ok(v.clone()),
 
         Expression::Identifier(name) => {
-            row.get(name.as_str()).cloned().ok_or_else(|| EngineError {
-                message: format!("column '{}' not found in row", name),
-            })
+            row.get(name.as_str()).cloned().ok_or_else(|| Error::ColumnNotInRow(name.clone()))
         }
 
         Expression::BinaryOp { op, lhs, rhs } => {
@@ -32,76 +26,57 @@ fn eval_expr(expr: &Expression, row: &HashMap<&str, Value>) -> Result<Value, Eng
                 Operator::Neq => Ok(Value::Bool(l != r)),
 
                 // Comparison (numbers only)
-                Operator::Lt => match (l, r) {
+                Operator::Lt => match (&l, &r) {
                     (Value::Number(a), Value::Number(b)) => Ok(Value::Bool(a < b)),
-                    _ => Err(EngineError {
-                        message: "< requires numbers".to_string(),
-                    }),
+                    _ => Err(Error::TypeMismatch { expected: Type::Number, got: l.typ() }),
                 },
-                Operator::Gt => match (l, r) {
+                Operator::Gt => match (&l, &r) {
                     (Value::Number(a), Value::Number(b)) => Ok(Value::Bool(a > b)),
-                    _ => Err(EngineError {
-                        message: "> requires numbers".to_string(),
-                    }),
+                    _ => Err(Error::TypeMismatch { expected: Type::Number, got: l.typ() }),
                 },
-                Operator::Leq => match (l, r) {
+                Operator::Leq => match (&l, &r) {
                     (Value::Number(a), Value::Number(b)) => Ok(Value::Bool(a <= b)),
-                    _ => Err(EngineError {
-                        message: "<= requires numbers".to_string(),
-                    }),
+                    _ => Err(Error::TypeMismatch { expected: Type::Number, got: l.typ() }),
                 },
-                Operator::Geq => match (l, r) {
+                Operator::Geq => match (&l, &r) {
                     (Value::Number(a), Value::Number(b)) => Ok(Value::Bool(a >= b)),
-                    _ => Err(EngineError {
-                        message: ">= requires numbers".to_string(),
-                    }),
+                    _ => Err(Error::TypeMismatch { expected: Type::Number, got: l.typ() }),
                 },
 
                 // Arithmetic
-                Operator::Add => match (l, r) {
-                    (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a + b)),
-                    _ => Err(EngineError {
-                        message: "+ requires numbers".to_string(),
-                    }),
+                Operator::Add => match (&l, &r) {
+                    (Value::Number(a), Value::Number(b)) => Ok(Value::Number(*a + *b)),
+                    _ => Err(Error::TypeMismatch { expected: Type::Number, got: l.typ() }),
                 },
-                Operator::Sub => match (l, r) {
-                    (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a - b)),
-                    _ => Err(EngineError {
-                        message: "- requires numbers".to_string(),
-                    }),
+                Operator::Sub => match (&l, &r) {
+                    (Value::Number(a), Value::Number(b)) => Ok(Value::Number(*a - *b)),
+                    _ => Err(Error::TypeMismatch { expected: Type::Number, got: l.typ() }),
                 },
-                Operator::Mul => match (l, r) {
-                    (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a * b)),
-                    _ => Err(EngineError {
-                        message: "* requires numbers".to_string(),
-                    }),
+                Operator::Mul => match (&l, &r) {
+                    (Value::Number(a), Value::Number(b)) => Ok(Value::Number(*a * *b)),
+                    _ => Err(Error::TypeMismatch { expected: Type::Number, got: l.typ() }),
                 },
-                Operator::Div => match (l, r) {
-                    (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a / b)),
-                    _ => Err(EngineError {
-                        message: "/ requires numbers".to_string(),
-                    }),
+                Operator::Div => match (&l, &r) {
+                    (Value::Number(_), Value::Number(b)) if *b == 0.0 => Err(Error::DivisionByZero),
+                    (Value::Number(a), Value::Number(b)) => Ok(Value::Number(*a / *b)),
+                    _ => Err(Error::TypeMismatch { expected: Type::Number, got: l.typ() }),
                 },
 
                 // Logical
-                Operator::And => match (l, r) {
-                    (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a && b)),
-                    _ => Err(EngineError {
-                        message: "&& requires booleans".to_string(),
-                    }),
+                Operator::And => match (&l, &r) {
+                    (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a && *b)),
+                    _ => Err(Error::TypeMismatch { expected: Type::Bool, got: l.typ() }),
                 },
-                Operator::Or => match (l, r) {
-                    (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a || b)),
-                    _ => Err(EngineError {
-                        message: "|| requires booleans".to_string(),
-                    }),
+                Operator::Or => match (&l, &r) {
+                    (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a || *b)),
+                    _ => Err(Error::TypeMismatch { expected: Type::Bool, got: l.typ() }),
                 },
             }
         }
     }
 }
 
-pub fn execute_insert(stmt: &BoundInsertStatement) -> Result<u64, EngineError> {
+pub fn execute_insert(stmt: &BoundInsertStatement) -> Result<u64, Error> {
     let table = stmt.table;
     let rowid = table.rows.get();
 
@@ -113,15 +88,13 @@ pub fn execute_insert(stmt: &BoundInsertStatement) -> Result<u64, EngineError> {
         .table
         .columns
         .get_index_of(&stmt.table.primary_key_name)
-        .ok_or_else(|| EngineError {
-            message: "Could not find primary key index in table columns".to_string(),
-        })?;
+        .ok_or_else(|| Error::ColumnNotFound(stmt.table.primary_key_name.clone()))?;
 
     let key = &all_values[primary_key_index];
     table.insert(key, &all_values);
     Ok(1)
 }
-pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, EngineError> {
+pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, Error> {
     let table = stmt.table;
 
     let mut results = 0;
@@ -130,17 +103,13 @@ pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, EngineError> {
         .table
         .columns
         .get_index_of(&stmt.table.primary_key_name)
-        .ok_or_else(|| EngineError {
-            message: "Could not find primary key index in table columns".to_string(),
-        })?;
+        .ok_or_else(|| Error::ColumnNotFound(stmt.table.primary_key_name.clone()))?;
     let cols: Vec<&Column> = table.columns.values().collect();
     let col_names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
     while !cursor.eot {
         let node = cursor.read_node();
         let Node::Leaf { cells, .. } = node else {
-            return Err(EngineError {
-                message: "should never receive a non-leaf node from cursor".into(),
-            })?;
+            unreachable!("cursor should always point to a leaf node")
         };
 
         let (_, row) = &cells[cursor.cell_num];
@@ -154,10 +123,10 @@ pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, EngineError> {
                     cursor.advance();
                     continue;
                 }
-
-                _ => {
-                    return Err(EngineError {
-                        message: "WHERE must be bool".into(),
+                other => {
+                    return Err(Error::TypeMismatch {
+                        expected: Type::Bool,
+                        got: other.typ(),
                     });
                 }
             }
@@ -171,7 +140,7 @@ pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, EngineError> {
     Ok(results)
 }
 
-pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, EngineError> {
+pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, Error> {
     let table = stmt.table;
     let cols: Vec<&Column> = table.columns.values().collect();
     let col_names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
@@ -188,9 +157,7 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, En
     while !cursor.eot {
         let node = cursor.read_node();
         let Node::Leaf { cells, .. } = node else {
-            return Err(EngineError {
-                message: "should never receive a non-leaf node from cursor".into(),
-            })?;
+            unreachable!("cursor should always point to a leaf node")
         };
 
         let (_, row) = &cells[cursor.cell_num];
@@ -204,10 +171,10 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, En
                     cursor.advance();
                     continue;
                 }
-
-                _ => {
-                    return Err(EngineError {
-                        message: "WHERE must be bool".into(),
+                other => {
+                    return Err(Error::TypeMismatch {
+                        expected: Type::Bool,
+                        got: other.typ(),
                     });
                 }
             }
@@ -222,7 +189,7 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, En
     Ok(results)
 }
 
-pub fn execute(stmt: &BoundStatement) -> Result<QueryResult, EngineError> {
+pub fn execute(stmt: &BoundStatement) -> Result<QueryResult, Error> {
     match stmt {
         BoundStatement::Insert(s) => {
             let rows = execute_insert(s)?;

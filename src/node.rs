@@ -1,4 +1,5 @@
-use crate::column::{Column, deserialize_row, serialize_row};
+use crate::column::{deserialize_row, serialize_row, Column};
+use crate::error::Error;
 use crate::value::Value;
 
 pub const HEADER_SIZE: usize = 12;
@@ -30,11 +31,6 @@ pub const HEADER_SIZE: usize = 12;
  *
  * ks = key_size, rs = row_size
  */
-
-#[derive(Debug)]
-pub enum DataAccessError {
-    OutOfBounds { index: usize, len: usize },
-}
 
 #[derive(Debug)]
 pub enum Node {
@@ -79,16 +75,6 @@ impl Node {
             Node::Internal { .. } => None,
         }
     }
-
-    pub fn read_is_leaf(src: &[u8]) -> bool {
-        src[0] != 0
-    }
-
-    pub fn read_right_child(src: &[u8]) -> usize {
-        let bytes: [u8; 4] = src[8..12].try_into().unwrap();
-        u32::from_le_bytes(bytes) as usize
-    }
-
     pub fn read_next_leaf(src: &[u8]) -> Option<usize> {
         let ptr_bytes: [u8; 4] = src[8..12].try_into().unwrap();
         let ptr_raw = u32::from_le_bytes(ptr_bytes);
@@ -97,6 +83,18 @@ impl Node {
         } else {
             None
         }
+    }
+
+    pub fn is_leaf(&self) -> bool {
+        matches!(self, Node::Leaf { .. })
+    }
+    pub fn read_is_leaf(src: &[u8]) -> bool {
+        src[0] != 0
+    }
+
+    pub fn read_right_child(src: &[u8]) -> usize {
+        let bytes: [u8; 4] = src[8..12].try_into().unwrap();
+        u32::from_le_bytes(bytes) as usize
     }
 
     pub fn read_left_child(src: &[u8]) -> usize {
@@ -125,10 +123,10 @@ impl Node {
         n: usize,
         key_column: &Column,
         row_size: usize,
-    ) -> Result<Value, DataAccessError> {
+    ) -> Result<Value, Error> {
         let num_cells = Self::read_num_cells(src);
         if n >= num_cells {
-            return Err(DataAccessError::OutOfBounds {
+            return Err(Error::OutOfBounds {
                 index: n,
                 len: num_cells,
             });

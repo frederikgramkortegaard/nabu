@@ -1,13 +1,6 @@
 use super::table::Table;
-use crate::analyzer;
-use crate::core;
-use crate::sql::*;
+use crate::error::Error;
 use indexmap::IndexMap;
-
-#[derive(Debug, Clone)]
-pub struct DatabaseError {
-    pub message: String,
-}
 
 #[derive(Debug, Default)]
 pub struct Database<'a> {
@@ -27,11 +20,9 @@ impl<'a> Database<'a> {
         self.tables.contains_key(name)
     }
 
-    pub fn add_table(&mut self, table: &'a Table) -> Result<(), DatabaseError> {
+    pub fn add_table(&mut self, table: &'a Table) -> Result<(), Error> {
         if self.table_exists(&table.name) {
-            return Err(DatabaseError {
-                message: format!("Table with name '{:?}' already exists", table.name),
-            });
+            return Err(Error::DuplicateTable(table.name.clone()));
         }
         self.tables.insert(table.name.clone(), table);
 
