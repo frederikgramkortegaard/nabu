@@ -6,7 +6,6 @@ mod error;
 mod node;
 mod sql;
 mod storage;
-mod tree;
 mod types;
 mod value;
 
@@ -15,8 +14,6 @@ use sql::lexer::LexerContext;
 use sql::parser::ParserContext;
 use storage::{ColumnType, Database, TableBuilder};
 use types::QueryResult;
-
-use rand::Rng;
 
 fn run_query(db: &Database, query: &str) -> Result<QueryResult, Error> {
     let tokens = LexerContext::lex(query)?;

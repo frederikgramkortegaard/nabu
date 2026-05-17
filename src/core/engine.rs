@@ -123,6 +123,7 @@ pub fn execute_insert(stmt: &BoundInsertStatement) -> Result<u64, Error> {
 
     let key = &all_values[primary_key_index];
     table.insert(key, &all_values)?;
+    table.pager.borrow_mut().sync()?;
     Ok(1)
 }
 pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, Error> {
@@ -168,6 +169,7 @@ pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, Error> {
         results += 1;
     }
 
+    table.pager.borrow_mut().sync()?;
     Ok(results)
 }
 

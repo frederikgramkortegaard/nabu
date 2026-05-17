@@ -103,6 +103,22 @@ impl Pager {
         self.next_page += 1;
         page_num
     }
+
+    /// Flush all dirty pages to disk and sync
+    pub fn sync(&mut self) -> Result<(), Error> {
+        if let Some(ref mut file) = self.file {
+            for &page_num in &self.dirty {
+                if let Some(page) = self.page_cache.get(&page_num) {
+                    let offset = MAGIC + (PAGE_SIZE * page_num);
+                    file.seek(SeekFrom::Start(offset as u64))?;
+                    file.write_all(&page.data)?;
+                }
+            }
+            self.dirty.clear();
+            file.sync_all()?;
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Pager {
@@ -116,6 +132,7 @@ impl Drop for Pager {
                     file.write_all(&page.data).expect("failed to write to page");
                 }
             }
+            file.sync_all().expect("Failed to sync to disk");
         }
     }
 }
