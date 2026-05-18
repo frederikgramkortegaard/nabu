@@ -43,13 +43,13 @@ SELECT * FROM users;
 ## Example
 
 ```sql
-SELECT * FROM users WHERE age > 25
+SELECT * FROM users WHERE id > 1
 ```
 
 ```
 Ok(Select { rows: [
-  [Number(1.0), Varchar("alice"), Number(30.0)],
-  [Number(2.0), Varchar("bob"), Number(28.0)]
+  [Number(2.0), Varchar("bob"), Varchar("bob@example.com")],
+  [Number(3.0), Varchar("carol"), Varchar("carol@example.com")]
 ] })
 ```
 
