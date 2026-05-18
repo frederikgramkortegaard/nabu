@@ -6,7 +6,6 @@ A lightweight SQL database engine written from scratch in Rust using B+Trees.
 - SQL parsing (lexer, parser, type checker)
 - Support for `SELECT`, `INSERT`, `DELETE` with `WHERE` clauses
 - System table for schema persistence
-- Interactive REPL with `.load_database`, `.create_table`, `.exec_file` commands
 
 ## Usage
 
@@ -16,28 +15,12 @@ cargo run
 ```
 
 ```
-.load_database mydb.db
-.create_table users id:number name:varchar(32) email:varchar(64)
+-- example syntax
 INSERT INTO users VALUES (1, 'alice', 'alice@example.com')
 INSERT INTO users VALUES (2, 'bob', 'bob@example.com')
 SELECT * FROM users
 SELECT * FROM users WHERE id = 1
 SELECT name, email FROM users WHERE id > 1
-```
-
-Execute a SQL script file:
-
-```
-.load_database mydb.db
-.exec_file seed.sql
-```
-
-```sql
--- seed.sql
-INSERT INTO users VALUES (1, 'alice', 'alice@example.com');
-INSERT INTO users VALUES (2, 'bob', 'bob@example.com');
-INSERT INTO users VALUES (3, 'carol', 'carol@example.com');
-SELECT * FROM users;
 ```
 
 ## Example
@@ -74,8 +57,6 @@ src/
 |   +-- database.rs       # Multi-table management
 |
 |-- core/
-|   |-- engine.rs         # Query execution
-|   +-- evaluator.rs      # Expression evaluation
-|
-+-- repl.rs
+    |-- engine.rs         # Query execution
+    +-- evaluator.rs      # Expression evaluation
 ```
