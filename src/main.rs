@@ -2,12 +2,14 @@ mod analyzer;
 mod core;
 mod error;
 mod magic;
+mod repl;
 mod sql;
 mod storage;
 mod types;
 
 use error::Error;
 use rand::distr::{Alphanumeric, SampleString};
+use repl::Repl;
 use sql::lexer::LexerContext;
 use sql::parser::ParserContext;
 use storage::{Database, TableBuilder};
@@ -25,6 +27,11 @@ fn run_query(db: &Database, query: &str) -> Result<QueryResult, Error> {
 fn main() {
     env_logger::init();
 
+    let mut repl = Repl::new();
+    let b = repl.start();
+    println!("repl result: {:?}", b);
+
+    return;
     let mut mydb = Database::new("test.db").unwrap();
 
     if !mydb.table_exists("MyTable") {
@@ -37,7 +44,7 @@ fn main() {
         )
         .unwrap();
 
-        for i in 0..100 {
+        for i in 0..10 {
             let result = run_query(
                 &mydb,
                 format!(

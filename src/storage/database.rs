@@ -146,7 +146,7 @@ impl Database {
                 {
                     let mut p = pager.borrow_mut();
                     let page = p.get_page(0)?;
-                    let root = system_table.root_page.get();
+                    let root = system_table.root_page();
                     let new_header = DatabaseHeader::new(root);
                     new_header.serialize(root, &mut page.data)?;
                     p.sync()?;

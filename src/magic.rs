@@ -1,5 +1,4 @@
 use crate::error::Error;
-use crate::storage::Database;
 use crate::storage::pager::PAGE_SIZE;
 pub const MAGIC_BYTES: &[u8; 4] = b"RSDB";
 pub const CURRENT_VERSION: u32 = 1;
