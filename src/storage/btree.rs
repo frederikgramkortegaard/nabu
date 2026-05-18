@@ -183,12 +183,14 @@ impl BTree {
             return Err(Error::WrongNodeType("insert_into_leaf called on non-leaf".into()));
         };
 
-        let cell_num = match cells.binary_search_by(|(k, _)| k.cmp(key)) {
-            Ok(idx) => idx,
-            Err(idx) => idx,
+        let (cell_num, is_new) = match cells.binary_search_by(|(k, _)| k.cmp(key)) {
+            Ok(idx) => (idx, false),  // duplicate key - overwrite
+            Err(idx) => (idx, true),  // new key - need to shift
         };
 
-        self.shift_cells_right(page_num, cell_num)?;
+        if is_new {
+            self.shift_cells_right(page_num, cell_num)?;
+        }
         self.write_cell(page_num, cell_num, key, row, cols)?;
         Ok(())
     }
