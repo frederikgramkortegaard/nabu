@@ -19,7 +19,10 @@ cargo run
 .load_database mydb.db
 .create_table users id:number name:varchar(32) email:varchar(64)
 INSERT INTO users VALUES (1, 'alice', 'alice@example.com')
+INSERT INTO users VALUES (2, 'bob', 'bob@example.com')
 SELECT * FROM users
+SELECT * FROM users WHERE id = 1
+SELECT name, email FROM users WHERE id > 1
 ```
 
 Execute a SQL script file:
