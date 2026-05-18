@@ -1,7 +1,7 @@
 use super::node::{HEADER_SIZE, Node};
 use super::pager::{PAGE_SIZE, Pager};
 use crate::error::Error;
-use crate::types::{Column, Value, serialize_row};
+use crate::types::{Column, Row, Value};
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -175,17 +175,19 @@ impl BTree {
         &self,
         page_num: usize,
         key: &Value,
-        row: &[Value],
+        row: &Row,
         cols: &[&Column],
     ) -> Result<(), Error> {
         let node = self.read_node(page_num, cols)?;
         let Node::Leaf { cells, .. } = node else {
-            return Err(Error::WrongNodeType("insert_into_leaf called on non-leaf".into()));
+            return Err(Error::WrongNodeType(
+                "insert_into_leaf called on non-leaf".into(),
+            ));
         };
 
         let (cell_num, is_new) = match cells.binary_search_by(|(k, _)| k.cmp(key)) {
-            Ok(idx) => (idx, false),  // duplicate key - overwrite
-            Err(idx) => (idx, true),  // new key - need to shift
+            Ok(idx) => (idx, false), // duplicate key - overwrite
+            Err(idx) => (idx, true), // new key - need to shift
         };
 
         if is_new {
@@ -209,7 +211,9 @@ impl BTree {
             ..
         } = node
         else {
-            return Err(Error::WrongNodeType("insert_into_internal called on non-internal".into()));
+            return Err(Error::WrongNodeType(
+                "insert_into_internal called on non-internal".into(),
+            ));
         };
 
         let idx = match keys.binary_search(split_key) {
@@ -267,7 +271,9 @@ impl BTree {
             parent,
         } = node
         else {
-            return Err(Error::WrongNodeType("split_internal called on non-internal".into()));
+            return Err(Error::WrongNodeType(
+                "split_internal called on non-internal".into(),
+            ));
         };
 
         let mid = keys.len() / 2;
@@ -300,7 +306,7 @@ impl BTree {
         &self,
         page_num: usize,
         key: &Value,
-        row: &[Value],
+        row: &Row,
         cols: &[&Column],
     ) -> Result<(Value, usize), Error> {
         let (split_key, new_page) = self.split_leaf(page_num, cols)?;
@@ -336,7 +342,7 @@ impl BTree {
         &self,
         page_num: usize,
         key: &Value,
-        values: &[Value],
+        values: &Row,
         cols: &[&Column],
     ) -> Result<Option<(Value, usize)>, Error> {
         let node = self.read_node(page_num, cols)?;
@@ -379,7 +385,7 @@ impl BTree {
         }
     }
 
-    pub fn insert(&self, key: &Value, row: &[Value], cols: &[&Column]) -> Result<(), Error> {
+    pub fn insert(&self, key: &Value, row: &Row, cols: &[&Column]) -> Result<(), Error> {
         let old_root = self.root_page.get();
         if let Some((split_key, new_sibling)) = self.insert_recursive(old_root, key, row, cols)? {
             self.create_new_root(&split_key, old_root, new_sibling, cols)?;
@@ -447,7 +453,7 @@ impl BTree {
         page_num: usize,
         cell_num: usize,
         key: &Value,
-        row: &[Value],
+        row: &Row,
         cols: &[&Column],
     ) -> Result<(), Error> {
         let mut pager = self.pager.borrow_mut();
@@ -456,7 +462,7 @@ impl BTree {
         let offset = HEADER_SIZE + cell_num * self.cell_size;
         key.serialize(&mut page.data[offset..], self.key_size);
 
-        serialize_row(row, cols.to_vec(), &mut page.data[offset + self.key_size..]);
+        row.serialize(cols.to_vec(), &mut page.data[offset + self.key_size..]);
         Ok(())
     }
 }

@@ -1,34 +1,23 @@
 use super::pager::Pager;
-use super::table::{Table, TableBuilder};
+use super::table::{Table, TableBuilder, TableMetadata};
+use crate::constants::{MAX_COLUMNS_STR_LEN, MAX_TABLE_NAME_LEN};
 use crate::error::Error;
 use crate::magic::DatabaseHeader;
 use crate::types::{Column, ColumnType, Type, Value};
 use indexmap::IndexMap;
 use log::debug;
-use ordered_float::OrderedFloat;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 // System table columns
 fn system_table_columns() -> IndexMap<String, Column> {
-    let mut cols = IndexMap::new();
-    cols.insert(
-        "table_name".into(),
-        Column::new("table_name".into(), ColumnType::Varchar(64)),
-    );
-
-    cols.insert(
-        "root_page".into(),
-        Column::new("root_page".into(), ColumnType::Number),
-    );
-
-    cols.insert(
-        "columns".into(),
-        Column::new("columns".into(), ColumnType::Varchar(1024)),
-    ); //@TODO: this is a little
-    //hacky, maybe this should be a key into another table or something.
-
-    cols
+    IndexMap::from([
+        ("table_name".into(), Column::new("table_name".into(), ColumnType::Varchar(MAX_TABLE_NAME_LEN))),
+        ("root_page".into(), Column::new("root_page".into(), ColumnType::Number)),
+        // @TODO: this is a little hacky, maybe this should be a key into another table or something.
+        ("columns".into(), Column::new("columns".into(), ColumnType::Varchar(MAX_COLUMNS_STR_LEN))),
+        ("primary_key_index".into(), Column::new("primary_key_index".into(), ColumnType::Number)),
+    ])
 }
 
 #[derive(Debug)]
@@ -36,7 +25,6 @@ pub struct Database {
     pub pager: Rc<RefCell<Pager>>,
     pub tables: IndexMap<String, Table>,
     pub system_table: Table,
-    pub next_row_id: usize,
 }
 
 impl Database {
@@ -54,12 +42,12 @@ impl Database {
             Some(header) => {
                 debug!("Found valid database header: {:?}", header);
 
-                // Load system tables
                 let system_table = Table::load(
                     "_system_table".into(),
                     system_table_columns(),
                     header.system_table_page,
                     pager.clone(),
+                    true,
                 );
 
                 debug!("Loaded system table: {:?}", system_table);
@@ -67,7 +55,6 @@ impl Database {
                 let mut cursor = system_table.start()?;
                 debug!("System table cursor: {:?}", cursor);
 
-                let mut n_rows = 0;
                 while !cursor.eot {
                     debug!(
                         "System table entry at page={} cell={}",
@@ -76,24 +63,24 @@ impl Database {
 
                     let row = cursor.row()?;
                     debug!("Row: {:?}", row);
-                    let Value::Varchar(table_name) = row[1].clone() else {
+                    let Value::Varchar(table_name) = row[0].clone() else {
                         return Err(Error::TypeMismatch {
                             expected: Type::Varchar(64),
-                            got: row[1].typ(),
+                            got: row[0].typ(),
                         });
                     };
-                    let Value::Number(n) = row[2].clone() else {
+                    let Value::Number(n) = row[1].clone() else {
                         return Err(Error::TypeMismatch {
                             expected: Type::Number,
-                            got: row[2].typ(),
+                            got: row[1].typ(),
                         });
                     };
                     let table_page_num = n.into_inner() as usize;
 
-                    let Value::Varchar(stringified_columns) = row[3].clone() else {
+                    let Value::Varchar(stringified_columns) = row[2].clone() else {
                         return Err(Error::TypeMismatch {
                             expected: Type::Varchar(1024),
-                            got: row[3].typ(),
+                            got: row[2].typ(),
                         });
                     };
 
@@ -105,11 +92,12 @@ impl Database {
                             .split_once(':')
                             .ok_or(Error::CorruptedTree("Invalid column format".into()))?;
 
-                        let column_type =
-                            ColumnType::from_str(type_str).ok_or(Error::CorruptedTree(format!(
+                        let column_type: ColumnType = type_str.parse().map_err(|_| {
+                            Error::CorruptedTree(format!(
                                 "Invalid Type found in system table: {:?}",
                                 type_str
-                            )))?;
+                            ))
+                        })?;
                         user_columns
                             .insert(name.to_string(), Column::new(name.to_string(), column_type));
                     }
@@ -119,10 +107,10 @@ impl Database {
                         user_columns,
                         table_page_num,
                         pager.clone(),
+                        false,
                     );
                     debug!("Loaded table: {:?}", table.name);
                     tables.insert(table_name, table);
-                    n_rows += 1;
                     cursor.advance()?;
                 }
 
@@ -130,7 +118,6 @@ impl Database {
                     pager,
                     tables,
                     system_table,
-                    next_row_id: n_rows,
                 })
             }
             None => {
@@ -141,6 +128,7 @@ impl Database {
                     "_system_table".into(),
                     system_table_columns(),
                     pager.clone(),
+                    true,
                 )?;
 
                 {
@@ -156,7 +144,6 @@ impl Database {
                     pager,
                     tables,
                     system_table,
-                    next_row_id: 0,
                 })
             }
         }
@@ -173,8 +160,8 @@ impl Database {
                 "_system".into(),
                 system_table_columns(),
                 pager.clone(),
+                true,
             )?,
-            next_row_id: 0,
         })
     }
 
@@ -192,24 +179,59 @@ impl Database {
             return Err(Error::DuplicateTable(table.name.clone()));
         }
 
-        // Insert the tables metadata into the system table
-        let meta = table.metadata_as_values()?;
-        let rowid = Value::Number(OrderedFloat(self.next_row_id as f64));
-        self.next_row_id += 1;
+        let meta = TableMetadata::new(&table);
+        let row = meta.to_row();
+        let key = Value::Varchar(table.name.clone()); // table_name is the key
 
-        let row = vec![
-            rowid.clone(),
-            meta.name,
-            meta.root_page,
-            meta.columns,
-            meta.primary_key_index,
-        ];
+        self.system_table.insert(&key, &row)?;
+        self.pager.borrow_mut().sync()?;
 
-        self.system_table.insert(&rowid, &row)?;
-
-        // Insert it into the database tables
         self.tables.insert(table.name.clone(), table);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ColumnType;
+    use std::fs;
+
+    #[test]
+    fn test_database_create_and_load() {
+        let path = "/tmp/rustdb_test.db";
+        let _ = fs::remove_file(path);
+
+        // Create database and table
+        {
+            let mut db = Database::new(path).unwrap();
+            db.create_table(
+                TableBuilder::new("users")
+                    .column("id", ColumnType::Number)
+                    .column("name", ColumnType::Varchar(32)),
+            )
+            .unwrap();
+            assert!(db.table_exists("users"));
+            assert_eq!(db.tables.len(), 1);
+        }
+
+        // Reload database and verify table persisted
+        {
+            let db = Database::new(path).unwrap();
+            assert!(db.table_exists("users"));
+            assert_eq!(db.tables.len(), 1);
+
+            let table = db.get_table("users").unwrap();
+            // 4 system columns + 2 user columns
+            assert_eq!(table.columns.len(), 6);
+
+            let user_cols: Vec<_> = table.user_columns().collect();
+            assert_eq!(user_cols.len(), 2);
+            assert_eq!(user_cols[0].name, "id");
+            assert_eq!(user_cols[1].name, "name");
+        }
+
+        let _ = fs::remove_file(path);
     }
 }

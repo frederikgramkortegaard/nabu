@@ -47,9 +47,12 @@ pub enum Error {
 
     // Table
     ReservedColumnName(String),
+    InvalidColumnName { name: String, reason: String },
     DuplicateColumn(String),
     NoColumns,
     DuplicateTable(String),
+    TableNameTooLong(usize),
+    ColumnsTooLong(usize),
 
     // Data access
     OutOfBounds {

@@ -7,6 +7,7 @@ pub enum Type {
     Number,
     Varchar(usize),
     Bool,
+    Bytes(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,6 +15,7 @@ pub enum Value {
     Number(OrderedFloat<f64>),
     Varchar(String),
     Bool(bool),
+    Bytes(Vec<u8>),
 }
 
 impl Ord for Value {
@@ -22,6 +24,7 @@ impl Ord for Value {
             (Value::Number(a), Value::Number(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
             (Value::Varchar(a), Value::Varchar(b)) => a.cmp(b),
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+            (Value::Bytes(a), Value::Bytes(b)) => a.cmp(b),
             _ => panic!("Cannot compare different types"),
         }
     }
@@ -39,6 +42,7 @@ impl Value {
             Value::Number(_) => Type::Number,
             Value::Varchar(s) => Type::Varchar(s.len()),
             Value::Bool(_) => Type::Bool,
+            Value::Bytes(b) => Type::Bytes(b.len()),
         }
     }
 
@@ -47,6 +51,7 @@ impl Value {
             (Value::Number(a), Value::Number(b)) => a <= b,
             (Value::Varchar(a), Value::Varchar(b)) => a <= b,
             (Value::Bool(a), Value::Bool(b)) => *a as u8 <= *b as u8,
+            (Value::Bytes(a), Value::Bytes(b)) => a <= b,
             _ => panic!("Cannot compare values of different types"),
         }
     }
@@ -65,6 +70,11 @@ impl Value {
             Value::Bool(value) => {
                 dest[0] = if *value { 1 } else { 0 };
             }
+            Value::Bytes(value) => {
+                let len = value.len().min(column_size);
+                dest[..len].copy_from_slice(&value[..len]);
+                dest[len..column_size].fill(0);
+            }
         }
     }
 
@@ -80,6 +90,7 @@ impl Value {
                 Value::Varchar(String::from_utf8_lossy(&bytes[..end]).into_owned())
             }
             ColumnType::Bool => Value::Bool(src[0] != 0),
+            ColumnType::Bytes(len) => Value::Bytes(src[..len].to_vec()),
         }
     }
 }

@@ -46,13 +46,11 @@ fn bind_select<'a>(stmt: SelectStatement, db: &'a Database) -> Result<BoundState
     let mut columns: Vec<&Column> = vec![];
     for column_name in stmt.columns {
         if column_name == "*" {
-            for (_, c) in table.columns.iter() {
-                columns.push(c);
-            }
+            columns.extend(table.user_columns());
             break;
         }
         let col = table
-            .get_column(&column_name)
+            .get_user_column(&column_name)
             .ok_or_else(|| Error::ColumnNotFound(column_name.clone()))?;
 
         columns.push(col);

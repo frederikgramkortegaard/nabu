@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::types::{Column, Value, deserialize_row, serialize_row};
+use crate::types::{Column, Row, Value};
 
 pub const HEADER_SIZE: usize = 12;
 
@@ -40,7 +40,7 @@ pub enum Node {
     },
     Leaf {
         parent: Option<usize>,
-        cells: Vec<(Value, Vec<Value>)>,
+        cells: Vec<(Value, Row)>,
         next_leaf: Option<usize>,
     },
 }
@@ -159,7 +159,7 @@ impl Node {
         key_column: &Column,
         columns: Vec<&Column>,
         row_size: usize,
-    ) -> Result<Vec<Value>, Error> {
+    ) -> Result<Row, Error> {
         if !Node::read_is_leaf(src) {
             return Err(Error::WrongNodeType(
                 "read_row_at can only be called on leaf nodes".into(),
@@ -175,7 +175,7 @@ impl Node {
         }
 
         let offset = HEADER_SIZE + n * (key_column.column_size + row_size) + key_column.column_size;
-        Ok(deserialize_row(&columns, &src[offset..offset + row_size]))
+        Ok(Row::deserialize(&columns, &src[offset..offset + row_size]))
     }
 
     pub fn read_key_at(
@@ -224,6 +224,7 @@ impl Node {
             Node::Internal { keys, children, .. } => {
                 match children.last() {
                     Some(c) => dest[8..12].copy_from_slice(&(*c as u32).to_le_bytes()),
+
                     None => dest[8..12].fill(0xff),
                 }
 
@@ -241,10 +242,10 @@ impl Node {
                     None => dest[8..12].fill(0xff),
                 }
 
-                for (key, values) in cells {
+                for (key, row) in cells {
                     key.serialize(&mut dest[offset..offset + key_size], key_size);
                     offset += key_size;
-                    serialize_row(values, columns.to_vec(), &mut dest[offset..]);
+                    row.serialize(columns.to_vec(), &mut dest[offset..]);
                     offset += row_size;
                 }
             }
@@ -274,7 +275,7 @@ impl Node {
                 let key = Value::deserialize(&src[offset..], &columns[0]);
                 offset += key_size;
 
-                let row = deserialize_row(&columns.to_vec(), &src[offset..offset + row_size]);
+                let row = Row::deserialize(&columns.to_vec(), &src[offset..offset + row_size]);
                 offset += row_size;
 
                 cells.push((key, row));
@@ -421,9 +422,9 @@ mod tests {
         let node = Node::Leaf {
             parent: None,
             cells: vec![
-                (num(1.0), vec![num(1.0)]),
-                (num(2.0), vec![num(2.0)]),
-                (num(3.0), vec![num(3.0)]),
+                (num(1.0), Row(vec![num(1.0)])),
+                (num(2.0), Row(vec![num(2.0)])),
+                (num(3.0), Row(vec![num(3.0)])),
             ],
             next_leaf: Some(5),
         };
@@ -493,8 +494,8 @@ mod tests {
         let node = Node::Leaf {
             parent: None,
             cells: vec![
-                (num(100.0), vec![num(100.0)]),
-                (num(200.0), vec![num(200.0)]),
+                (num(100.0), Row(vec![num(100.0)])),
+                (num(200.0), Row(vec![num(200.0)])),
             ],
             next_leaf: None,
         };
@@ -571,7 +572,7 @@ mod tests {
 
         let node = Node::Leaf {
             parent: None,
-            cells: vec![(num(1.0), vec![num(1.0)])],
+            cells: vec![(num(1.0), Row(vec![num(1.0)]))],
             next_leaf: None,
         };
 

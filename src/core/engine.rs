@@ -1,8 +1,9 @@
 use super::evaluator::eval_expr;
 use crate::analyzer::bound::*;
+use crate::constants::NULL_BITMAP_SIZE;
 use crate::error::Error;
 use crate::storage::node::Node;
-use crate::types::{Column, QueryResult, Type, Value};
+use crate::types::{Column, QueryResult, Row, Type, Value};
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
 
@@ -11,18 +12,18 @@ pub fn execute_insert(stmt: &BoundInsertStatement) -> Result<u64, Error> {
     let rowid = table.next_row_id.get();
     table.next_row_id.set(rowid + 1);
 
-    // Prepend system columns (_rowid) to user values
-    let mut all_values = vec![Value::Number(OrderedFloat(rowid as f64))];
+    // Prepend system columns to user values
+    let mut all_values = vec![
+        Value::Number(OrderedFloat(rowid as f64)),    // _rowid
+        Value::Number(OrderedFloat(0.0)),             // _tidmin (dummy)
+        Value::Number(OrderedFloat(0.0)),             // _tidmax (dummy)
+        Value::Bytes(vec![0u8; NULL_BITMAP_SIZE]),    // _null_bitmap (all non-null)
+    ];
     all_values.extend(stmt.values.iter().cloned());
 
-    let primary_key_index = stmt
-        .table
-        .columns
-        .get_index_of(&stmt.table.primary_key_name)
-        .ok_or_else(|| Error::ColumnNotFound(stmt.table.primary_key_name.clone()))?;
-
-    let key = &all_values[primary_key_index];
-    table.insert(key, &all_values)?;
+    let row = Row(all_values);
+    let key = &row[stmt.table.primary_key_index];
+    table.insert(key, &row)?;
     table.pager().borrow_mut().sync()?;
     Ok(1)
 }
@@ -31,11 +32,6 @@ pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, Error> {
 
     let mut results = 0;
     let mut cursor = table.start()?;
-    let primary_key_index = stmt
-        .table
-        .columns
-        .get_index_of(&stmt.table.primary_key_name)
-        .ok_or_else(|| Error::ColumnNotFound(stmt.table.primary_key_name.clone()))?;
     let cols: Vec<&Column> = table.columns.values().collect();
     let col_names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
     while !cursor.eot {
@@ -63,7 +59,7 @@ pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, Error> {
                 }
             }
         }
-        let key = &row[primary_key_index];
+        let key = &row[table.primary_key_index];
         table.delete(key)?;
         cursor.refresh()?;
         results += 1;

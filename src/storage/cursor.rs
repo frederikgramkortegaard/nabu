@@ -51,15 +51,6 @@ impl Cursor<'_> {
         self.table.write_node(self.page_num, node)
     }
 
-    pub fn shift_cells_right(&self) -> Result<(), Error> {
-        self.table.shift_cells_right(self.page_num, self.cell_num)
-    }
-
-    pub fn write_cell(&self, key: &Value, row: &[Value]) -> Result<(), Error> {
-        self.table
-            .write_cell(self.page_num, self.cell_num, key, row)
-    }
-
     pub fn with_node<F, R>(&self, f: F) -> Result<R, Error>
     where
         F: FnOnce(&Node) -> Result<R, Error>,

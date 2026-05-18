@@ -1,7 +1,7 @@
 mod column;
 mod value;
 
-pub use column::{Column, ColumnType, Row, deserialize_row, serialize_row};
+pub use column::{Column, ColumnType, Row};
 pub use value::{Type, Value};
 
 #[derive(Debug)]

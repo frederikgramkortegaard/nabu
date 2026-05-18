@@ -4,12 +4,34 @@ use crate::sql::ast::{Expression, Operator};
 use crate::storage::Table;
 use crate::types::{ColumnType, Type, Value};
 
-fn is_compatible_value(value: &Value, target: ColumnType) -> bool {
+fn check_value(value: &Value, target: ColumnType) -> Result<(), Error> {
     match (value, target) {
-        (Value::Number(_), ColumnType::Number) => true,
-        (Value::Varchar(s), ColumnType::Varchar(n)) => s.len() <= n,
-        (Value::Bool(_), ColumnType::Bool) => true,
-        _ => false,
+        (Value::Number(_), ColumnType::Number) => Ok(()),
+        (Value::Varchar(s), ColumnType::Varchar(n)) => {
+            if s.len() <= n {
+                Ok(())
+            } else {
+                Err(Error::VarcharTooLong {
+                    max: n,
+                    got: s.len(),
+                })
+            }
+        }
+        (Value::Bool(_), ColumnType::Bool) => Ok(()),
+        (Value::Bytes(b), ColumnType::Bytes(n)) => {
+            if b.len() <= n {
+                Ok(())
+            } else {
+                Err(Error::TypeMismatch {
+                    expected: target.to_type(),
+                    got: value.typ(),
+                })
+            }
+        }
+        _ => Err(Error::TypeMismatch {
+            expected: target.to_type(),
+            got: value.typ(),
+        }),
     }
 }
 
@@ -25,12 +47,7 @@ fn typecheck_insert(stmt: &BoundInsertStatement) -> Result<(), Error> {
     }
 
     for (v, c) in std::iter::zip(values, user_columns) {
-        if !is_compatible_value(v, c.column_type) {
-            return Err(Error::TypeMismatch {
-                expected: c.column_type.to_type(),
-                got: v.typ(),
-            });
-        }
+        check_value(v, c.column_type)?;
     }
 
     Ok(())
@@ -55,7 +72,7 @@ fn typecheck_expression(expr: &Expression, table: &Table) -> Result<Type, Error>
     match expr {
         Expression::Literal(value) => Ok(value.typ()),
         Expression::Identifier(name) => table
-            .get_column(name)
+            .get_user_column(name)
             .map(|col| col.column_type.to_type())
             .ok_or_else(|| Error::ColumnNotFound(name.clone())),
         Expression::BinaryOp { op, lhs, rhs } => {
@@ -63,9 +80,13 @@ fn typecheck_expression(expr: &Expression, table: &Table) -> Result<Type, Error>
             let rhs_type = typecheck_expression(rhs, table)?;
 
             match op {
-                // Equality: any types, but must match
                 Operator::Eq | Operator::Neq => {
-                    if lhs_type != rhs_type {
+                    let compatible = match (&lhs_type, &rhs_type) {
+                        (Type::Varchar(s1), Type::Varchar(s2)) => s1 > s2,
+                        (Type::Bytes(s1), Type::Bytes(s2)) => s1 > s2,
+                        _ => lhs_type == rhs_type,
+                    };
+                    if !compatible {
                         return Err(Error::TypeMismatch {
                             expected: lhs_type,
                             got: rhs_type,
@@ -120,8 +141,8 @@ pub fn typecheck(stmt: &BoundStatement) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::pager::Pager;
     use crate::storage::Table;
+    use crate::storage::pager::Pager;
     use crate::types::ColumnType;
     use ordered_float::OrderedFloat;
     use std::cell::RefCell;
@@ -136,7 +157,8 @@ mod tests {
                 ("name".to_string(), ColumnType::Varchar(32)),
             ],
             pager,
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     #[test]
@@ -193,7 +215,10 @@ mod tests {
         };
 
         let result = typecheck_insert(&stmt);
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(Error::VarcharTooLong { max: 32, got: 100 })
+        ));
     }
 
     // Expression typechecking tests
