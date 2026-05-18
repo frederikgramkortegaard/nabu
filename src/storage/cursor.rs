@@ -1,7 +1,7 @@
 use super::node::Node;
 use super::table::Table;
 use crate::error::Error;
-use crate::types::Value;
+use crate::types::{Row, Value};
 
 #[derive(Debug)]
 pub struct Cursor<'a> {
@@ -35,6 +35,16 @@ impl Cursor<'_> {
 
     pub fn read_node(&self) -> Result<Node, Error> {
         self.table.read_node(self.page_num)
+    }
+
+    pub fn row(&self) -> Result<Row, Error> {
+        let node = self.read_node()?;
+        match node {
+            Node::Leaf { cells, .. } => Ok(cells[self.cell_num].1.clone()),
+            Node::Internal { .. } => Err(Error::WrongNodeType(
+                "cursor.row() called on internal node".into(),
+            )),
+        }
     }
 
     pub fn write_node(&self, node: &Node) -> Result<(), Error> {

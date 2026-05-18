@@ -7,6 +7,7 @@ mod storage;
 mod types;
 
 use error::Error;
+use rand::distr::{Alphanumeric, SampleString};
 use sql::lexer::LexerContext;
 use sql::parser::ParserContext;
 use storage::{Database, TableBuilder};
@@ -22,28 +23,36 @@ fn run_query(db: &Database, query: &str) -> Result<QueryResult, Error> {
 }
 
 fn main() {
+    env_logger::init();
+
     let mut mydb = Database::new("test.db").unwrap();
 
-    mydb.create_table(
-        TableBuilder::new("MyTable")
-            .column("id", ColumnType::Number)
-            .column("age", ColumnType::Number)
-            .column("username", ColumnType::Varchar(32))
-            .column("email", ColumnType::Varchar(256)),
-    )
-    .unwrap();
-    /*
-    for i in 0..100 {
-        let result = run_query(
-            &mydb,
-            format!(
-                "INSERT ({}, {}, \"alice\", \"alice@example.com\") INTO MyTable",
-                i,
-                rand::random_range(0..=100)
-            )
-            .as_str(),
-        );
-    }*/
-    let result = run_query(&mydb, "SELECT _rowid, id, age, username FROM MyTable ");
+    if !mydb.table_exists("MyTable") {
+        mydb.create_table(
+            TableBuilder::new("MyTable")
+                .column("id", ColumnType::Number)
+                .column("age", ColumnType::Number)
+                .column("username", ColumnType::Varchar(32))
+                .column("email", ColumnType::Varchar(256)),
+        )
+        .unwrap();
+
+        for i in 0..100 {
+            let result = run_query(
+                &mydb,
+                format!(
+                    "INSERT ({}, {}, \"{a}\", \"{a}@example.com\") INTO MyTable",
+                    i,
+                    rand::random_range(0..=100),
+                    a = Alphanumeric.sample_string(&mut rand::rng(), 16)
+                )
+                .as_str(),
+            );
+        }
+    }
+    let result = run_query(
+        &mydb,
+        "SELECT _rowid, id, age, username, email FROM MyTable ",
+    );
     println!("{:?}", result);
 }

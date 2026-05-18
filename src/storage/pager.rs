@@ -1,17 +1,21 @@
 use crate::error::Error;
 use std::cmp::max;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 pub const MAGIC: usize = 4096;
 pub const PAGE_SIZE: usize = 4096;
 pub const MAX_CACHE: usize = 32;
 
-#[derive(Debug)]
 pub struct Page {
     pub data: [u8; PAGE_SIZE],
 }
-
+impl fmt::Debug for Page {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Page").finish()
+    }
+}
 #[derive(Debug)]
 pub struct Pager {
     file: Option<File>,
@@ -35,7 +39,7 @@ impl Pager {
         }
 
         let next_page = if file_len <= MAGIC {
-            0
+            1
         } else {
             (file_len - MAGIC) / PAGE_SIZE
         };
@@ -55,7 +59,7 @@ impl Pager {
             page_cache: HashMap::new(),
             queue: VecDeque::new(),
             dirty: HashSet::new(),
-            next_page: 0,
+            next_page: 1,
         }
     }
 

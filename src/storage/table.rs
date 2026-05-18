@@ -2,8 +2,9 @@ use super::cursor::Cursor;
 use super::node::{HEADER_SIZE, Node};
 use super::pager::{PAGE_SIZE, Pager};
 use crate::error::Error;
-use crate::types::{Column, ColumnType, Value, deserialize_row, serialize_row};
+use crate::types::{Column, ColumnType, Value, serialize_row};
 use indexmap::IndexMap;
+use ordered_float::OrderedFloat;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -13,6 +14,14 @@ pub struct TableBuilder {
     name: String,
     columns: IndexMap<String, Column>,
     error: Option<Error>,
+}
+
+#[derive(Debug)]
+pub struct TableMetadataValues {
+    pub name: Value,
+    pub root_page: Value,
+    pub columns: Value,
+    pub primary_key_index: Value,
 }
 
 impl TableBuilder {
@@ -60,7 +69,6 @@ pub struct Table {
     pub rows: Cell<usize>,
     pub root_page: Cell<usize>, // Page number of the root node
     pub row_size: usize,
-    pub rows_per_page: usize,
     pub primary_key_name: String,
     pub primary_key_index: usize,
     pub key_size: usize,
@@ -557,7 +565,6 @@ impl Table {
         columns.extend(user_columns);
 
         let row_size: usize = columns.iter().map(|(_, c)| c.column_size).sum();
-        let rows_per_page = PAGE_SIZE / row_size;
         let primary_key_name = columns[0].name.clone();
         let key_size = columns[0].column_size;
         let cell_size = key_size + row_size;
@@ -572,6 +579,7 @@ impl Table {
             cells: vec![],
             next_leaf: None,
         };
+        println! {"root page {}", root_page};
         // We need to serialize it to the page
         empty_leaf.serialize(
             &mut pager.borrow_mut().get_page(root_page)?.data,
@@ -585,7 +593,6 @@ impl Table {
             rows: Cell::new(0),
             row_size,
             root_page: Cell::new(root_page),
-            rows_per_page,
             primary_key_name,
             primary_key_index: 0,
             key_size,
@@ -599,6 +606,63 @@ impl Table {
     /// Returns only user-defined columns (excludes system columns like _rowid)
     pub fn user_columns(&self) -> impl Iterator<Item = &Column> {
         self.columns.values().filter(|c| !c.name.starts_with('_'))
+    }
+
+    pub fn metadata_as_values(&self) -> Result<TableMetadataValues, Error> {
+        let name_as_value = Value::Varchar(self.name.clone());
+        let root_page_as_value = Value::Number(OrderedFloat(self.root_page.get() as f64));
+
+        let str_values = self
+            .columns
+            .iter()
+            .map(|(_, value)| value.to_string())
+            .collect::<Vec<String>>();
+        let combined = str_values.join(";");
+        let columns_as_value = Value::Varchar(combined);
+
+        let primary_key_index_as_value = Value::Number(OrderedFloat(self.primary_key_index as f64));
+        Ok(TableMetadataValues {
+            name: name_as_value,
+            columns: columns_as_value,
+            root_page: root_page_as_value,
+            primary_key_index: primary_key_index_as_value,
+        })
+    }
+    /// Load an existing table from stored metadata (doesn't allocate a new root page)
+    pub fn load(
+        name: String,
+        user_columns: IndexMap<String, Column>,
+        root_page: usize,
+        pager: Rc<RefCell<Pager>>,
+    ) -> Self {
+        let mut columns = IndexMap::new();
+        columns.insert(
+            "_rowid".to_string(),
+            Column::new("_rowid".to_string(), ColumnType::Number),
+        );
+        columns.extend(user_columns);
+
+        let row_size: usize = columns.iter().map(|(_, c)| c.column_size).sum();
+        let primary_key_name = columns[0].name.clone();
+        let key_size = columns[0].column_size;
+        let cell_size = key_size + row_size;
+        let max_cells_per_leaf = (PAGE_SIZE - HEADER_SIZE) / cell_size;
+        let max_keys_per_internal = (PAGE_SIZE - HEADER_SIZE) / (4 + key_size);
+
+        Table {
+            name,
+            columns,
+            rows: Cell::new(0),
+            row_size,
+            root_page: Cell::new(root_page),
+            primary_key_name,
+            primary_key_index: 0,
+            key_size,
+            cell_size,
+            max_cells_per_leaf,
+            max_keys_per_internal,
+            pager,
+        }
     }
 }
 

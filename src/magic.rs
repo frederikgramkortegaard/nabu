@@ -4,6 +4,7 @@ use crate::storage::pager::PAGE_SIZE;
 pub const MAGIC_BYTES: &[u8; 4] = b"RSDB";
 pub const CURRENT_VERSION: u32 = 1;
 
+#[derive(Debug)]
 pub struct DatabaseHeader {
     pub version: u32,
     pub page_size: usize,

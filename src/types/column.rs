@@ -25,6 +25,22 @@ impl ColumnType {
             ColumnType::Bool => Type::Bool,
         }
     }
+    pub fn to_string(&self) -> String {
+        match self {
+            ColumnType::Number => "n".to_string(),
+            ColumnType::Bool => "b".to_string(),
+            ColumnType::Varchar(n) => format!("v{}", n),
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "n" => Some(ColumnType::Number),
+            "b" => Some(ColumnType::Bool),
+            s if s.starts_with('v') => s[1..].parse().ok().map(ColumnType::Varchar),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +51,9 @@ pub struct Column {
 }
 
 impl Column {
+    pub fn to_string(&self) -> String {
+        format!("{}:{}", self.name, self.column_type.to_string())
+    }
     pub fn new(name: String, column_type: ColumnType) -> Self {
         Column {
             name,
