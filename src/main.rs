@@ -32,6 +32,7 @@ fn main() {
     println!("repl result: {:?}", b);
 
     return;
+
     let mut mydb = Database::new("test.db").unwrap();
 
     if !mydb.table_exists("MyTable") {
@@ -57,9 +58,6 @@ fn main() {
             );
         }
     }
-    let result = run_query(
-        &mydb,
-        "SELECT _rowid, id, age, username, email FROM MyTable ",
-    );
+    let result = run_query(&mydb, "SELECT username, age FROM MyTable WHERE age >= 12");
     println!("{:?}", result);
 }

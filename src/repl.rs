@@ -4,6 +4,7 @@ use crate::sql::parser::ParserContext;
 use crate::storage::Database;
 use crate::storage::TableBuilder;
 use crate::types::{ColumnType, QueryResult};
+use std::fs;
 
 use crate::analyzer;
 use crate::core;
@@ -28,7 +29,6 @@ impl Repl {
         }
     }
     pub fn start(&mut self) -> Result<(), Error> {
-        println!("{:?}\n", std::env::current_dir());
         loop {
             let mut input = String::new();
             let bytes_read = io::stdin().read_line(&mut input)?;
@@ -52,11 +52,34 @@ impl Repl {
 
                 self.active_database = Some(Database::new(file_name)?);
                 continue;
+            } else if input.starts_with(".exec_file ") && (*&self.active_database.is_some()) {
+                let file_name = input
+                    .split_once(".exec_file ")
+                    .ok_or(Error::UnexpectedEof {
+                        expected: "file path".into(),
+                    })?
+                    .1;
+
+                let script = fs::read_to_string(file_name)?;
+                let scripts: Vec<&str> = script.split(';').collect();
+                let Some(db) = &self.active_database else {
+                    unreachable!();
+                };
+                for s in scripts {
+                    let clean = s.trim();
+                    if clean.is_empty() {
+                        continue;
+                    }
+                    println!("/.. {:?}", clean);
+
+                    let result = run_query(db, clean)?;
+                    println!("{:?}\n", result);
+                }
             } else if input.starts_with(".create_table ") {
                 // .create_table name col1:type1 col2:type2 ...
                 // types: number, bool, varchar(N)
                 let Some(db) = &mut self.active_database else {
-                    println!("No database loaded");
+                    println!("No database loaded\n");
                     continue;
                 };
 
@@ -64,7 +87,7 @@ impl Repl {
                 let mut parts = args.split_whitespace();
 
                 let Some(table_name) = parts.next() else {
-                    println!("Usage: .create_table name col1:type1 col2:type2 ...");
+                    println!("Usage: .create_table name col1:type1 col2:type2 ...\n");
                     continue;
                 };
 
@@ -73,7 +96,7 @@ impl Repl {
 
                 for part in parts {
                     let Some((col_name, type_str)) = part.split_once(':') else {
-                        println!("Invalid column format '{}', expected name:type", part);
+                        println!("Invalid column format '{}', expected name:type\n", part);
                         parse_error = true;
                         break;
                     };
@@ -85,13 +108,16 @@ impl Repl {
                     } else if type_str.starts_with("varchar(") && type_str.ends_with(')') {
                         let len_str = &type_str[8..type_str.len() - 1];
                         let Ok(len) = len_str.parse::<usize>() else {
-                            println!("Invalid varchar length: {}", len_str);
+                            println!("Invalid varchar length: {}\n", len_str);
                             parse_error = true;
                             break;
                         };
                         ColumnType::Varchar(len)
                     } else {
-                        println!("Unknown type '{}', use number, bool, or varchar(N)", type_str);
+                        println!(
+                            "Unknown type '{}', use number, bool, or varchar(N)\n,",
+                            type_str
+                        );
                         parse_error = true;
                         break;
                     };
@@ -104,7 +130,7 @@ impl Repl {
                 }
 
                 if columns.is_empty() {
-                    println!("No columns specified");
+                    println!("No columns specified\n");
                     continue;
                 }
 
@@ -114,14 +140,14 @@ impl Repl {
                 }
 
                 match db.create_table(builder) {
-                    Ok(_) => println!("Created table '{}'", table_name),
-                    Err(e) => println!("Error: {:?}", e),
+                    Ok(_) => println!("Created table '{}'\n", table_name),
+                    Err(e) => println!("Error: {:?}\n", e),
                 }
             } else if let Some(db) = &self.active_database {
                 let result = run_query(db, input);
-                println!("{:?}", result);
+                println!("{:?}\n", result);
             } else {
-                println!("use .load_database <path> to load a database before running a query")
+                println!("use .load_database <path> to load a database before running a query\n")
             }
         }
 
