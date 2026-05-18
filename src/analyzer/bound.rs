@@ -27,10 +27,7 @@ pub enum BoundStatement<'a> {
     Delete(BoundDeleteStatement<'a>),
 }
 
-fn bind_insert<'a>(
-    stmt: InsertStatement,
-    db: &'a Database,
-) -> Result<BoundStatement<'a>, Error> {
+fn bind_insert<'a>(stmt: InsertStatement, db: &'a Database) -> Result<BoundStatement<'a>, Error> {
     let table = db
         .get_table(stmt.table_name.as_str())
         .ok_or_else(|| Error::TableNotFound(stmt.table_name.clone()))?;
@@ -41,17 +38,22 @@ fn bind_insert<'a>(
     }))
 }
 
-fn bind_select<'a>(
-    stmt: SelectStatement,
-    db: &'a Database,
-) -> Result<BoundStatement<'a>, Error> {
+fn bind_select<'a>(stmt: SelectStatement, db: &'a Database) -> Result<BoundStatement<'a>, Error> {
     let table = db
         .get_table(stmt.table.as_str())
         .ok_or_else(|| Error::TableNotFound(stmt.table.clone()))?;
 
     let mut columns: Vec<&Column> = vec![];
     for column_name in stmt.columns {
-        let col = table.get_column(&column_name).ok_or_else(|| Error::ColumnNotFound(column_name.clone()))?;
+        if column_name == "*" {
+            for (_, c) in table.columns.iter() {
+                columns.push(c);
+            }
+            break;
+        }
+        let col = table
+            .get_column(&column_name)
+            .ok_or_else(|| Error::ColumnNotFound(column_name.clone()))?;
 
         columns.push(col);
     }
@@ -62,10 +64,7 @@ fn bind_select<'a>(
         expr: stmt.expr,
     }))
 }
-fn bind_delete<'a>(
-    stmt: DeleteStatement,
-    db: &'a Database,
-) -> Result<BoundStatement<'a>, Error> {
+fn bind_delete<'a>(stmt: DeleteStatement, db: &'a Database) -> Result<BoundStatement<'a>, Error> {
     let table = db
         .get_table(stmt.table.as_str())
         .ok_or_else(|| Error::TableNotFound(stmt.table.clone()))?;
