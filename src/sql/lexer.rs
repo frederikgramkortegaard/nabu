@@ -17,10 +17,19 @@ pub enum TokenType {
     Select,
     Delete,
 
-    // ..
+    // Keywords
     Into,
     From,
     Where,
+    Join,
+    InnerJoin,
+    LeftOuterJoin,
+    RightOuterJoin,
+    FullOuterJoin,
+    CrossJoin,
+    On,
+    Limit,
+    OrderBy,
 
     // Delimiters
     LParen,
@@ -304,6 +313,17 @@ impl LexerContext {
                     "INTO" => TokenType::Into,
                     "FROM" => TokenType::From,
                     "WHERE" => TokenType::Where,
+                    "JOIN" => TokenType::Join,
+                    "ON" => TokenType::On,
+                    "LIMIT" => TokenType::Limit,
+                    "ORDER" => TokenType::OrderBy,
+                    "TRUE" => TokenType::True,
+                    "FALSE" => TokenType::False,
+                    "INNERJOIN" => TokenType::InnerJoin,
+                    "LEFTOUTERJOIN" => TokenType::LeftOuterJoin,
+                    "RIGHTOUTERJOIN" => TokenType::RightOuterJoin,
+                    "FULLOUTERJOIN" => TokenType::FullOuterJoin,
+                    "CROSSJOIN" => TokenType::CrossJoin,
                     _ => TokenType::Identifier,
                 };
                 lexer.add_token(token_type, lexeme, start_row, start_column);

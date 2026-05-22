@@ -29,7 +29,10 @@ pub enum Error {
 
     // Binding
     TableNotFound(String),
+    TableNotInScope(String),
     ColumnNotFound(String),
+    ColumnNotFoundInTable { column: String, table: String },
+    QualifierRequired { column: String },
 
     // Type checking
     TypeMismatch {

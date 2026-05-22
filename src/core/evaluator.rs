@@ -6,10 +6,11 @@ pub fn eval_expr(expr: &Expression, row: &HashMap<&str, Value>) -> Result<Value,
     match expr {
         Expression::Literal(v) => Ok(v.clone()),
 
-        Expression::Identifier(name) => row
-            .get(name.as_str())
+        // TODO: use qualifier to resolve column from correct table when joins are implemented
+        Expression::Identifier(id) => row
+            .get(id.name.as_str())
             .cloned()
-            .ok_or_else(|| Error::ColumnNotInRow(name.clone())),
+            .ok_or_else(|| Error::ColumnNotInRow(id.name.clone())),
 
         Expression::BinaryOp { op, lhs, rhs } => {
             let l = eval_expr(lhs, row)?;

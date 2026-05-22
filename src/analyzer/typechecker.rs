@@ -1,7 +1,8 @@
+use crate::analyzer::binder::resolve_column;
 use crate::analyzer::bound::*;
 use crate::error::Error;
 use crate::sql::ast::{Expression, Operator};
-use crate::storage::Table;
+use crate::storage::{Database, Table};
 use crate::types::{ColumnType, Type, Value};
 
 fn check_value(value: &Value, target: ColumnType) -> Result<(), Error> {
@@ -35,49 +36,17 @@ fn check_value(value: &Value, target: ColumnType) -> Result<(), Error> {
     }
 }
 
-fn typecheck_insert(stmt: &BoundInsertStatement) -> Result<(), Error> {
-    let BoundInsertStatement { values, table } = stmt;
-    let user_columns: Vec<_> = table.user_columns().collect();
-
-    if values.len() != user_columns.len() {
-        return Err(Error::WrongColumnCount {
-            expected: user_columns.len(),
-            got: values.len(),
-        });
-    }
-
-    for (v, c) in std::iter::zip(values, user_columns) {
-        check_value(v, c.column_type)?;
-    }
-
-    Ok(())
-}
-fn typecheck_select(stmt: &BoundSelectStatement) -> Result<(), Error> {
-    // Since this is already bound, we don't need to validate columns or table really.
-    if let Some(expr) = &stmt.expr {
-        typecheck_expression(expr, stmt.table)?;
-    }
-    Ok(())
-}
-fn typecheck_delete(stmt: &BoundDeleteStatement) -> Result<(), Error> {
-    // Since this is already bound, we don't need to validate table really.
-    if let Some(expr) = &stmt.expr {
-        typecheck_expression(expr, stmt.table)?;
-    }
-    Ok(())
-}
-
 // Returns the type that an expression evaluates to
-fn typecheck_expression(expr: &Expression, table: &Table) -> Result<Type, Error> {
+fn typecheck_expression(expr: &Expression, tables: &[&Table]) -> Result<Type, Error> {
     match expr {
         Expression::Literal(value) => Ok(value.typ()),
-        Expression::Identifier(name) => table
-            .get_user_column(name)
-            .map(|col| col.column_type.to_type())
-            .ok_or_else(|| Error::ColumnNotFound(name.clone())),
+        Expression::Identifier(id) => {
+            let col = resolve_column(id, tables)?;
+            Ok(col.column_type.to_type())
+        }
         Expression::BinaryOp { op, lhs, rhs } => {
-            let lhs_type = typecheck_expression(lhs, table)?;
-            let rhs_type = typecheck_expression(rhs, table)?;
+            let lhs_type = typecheck_expression(lhs, tables)?;
+            let rhs_type = typecheck_expression(rhs, tables)?;
 
             match op {
                 Operator::Eq | Operator::Neq => {
@@ -130,6 +99,91 @@ fn typecheck_expression(expr: &Expression, table: &Table) -> Result<Type, Error>
     }
 }
 
+/* CLAUSES*/
+
+fn typecheck_join_clause(
+    clause: &BoundJoinClause,
+    tables: &[&Table], //@NOTE : This should include the clause.on_table as well, as it's a
+                       //collection of ALL tables for the statement
+) -> Result<(), Error> {
+    if !((typecheck_expression(&clause.on, tables)?) == Type::Bool) {
+        Err(Error::Parse("expression must be bool".into()))
+    } else {
+        Ok(())
+    }
+}
+
+fn typecheck_where_clause(clause: &BoundWhereClause, tables: &[&Table]) -> Result<(), Error> {
+    typecheck_expression(&clause.0, tables)?;
+    Ok(())
+}
+
+fn typecheck_limit_clause(clause: &BoundLimitClause) -> Result<(), Error> {
+    Ok(())
+}
+fn typecheck_orderby_clause(clause: &BoundOrderByClause) -> Result<(), Error> {
+    /*
+    is_orderable(clause.column)?; // Not all column types should be possible to order by
+    * */
+    Ok(())
+}
+
+/* STATEMENTS */
+fn typecheck_insert(stmt: &BoundInsertStatement) -> Result<(), Error> {
+    let BoundInsertStatement { values, table } = stmt;
+    let user_columns: Vec<_> = table.user_columns().collect();
+
+    if values.len() != user_columns.len() {
+        return Err(Error::WrongColumnCount {
+            expected: user_columns.len(),
+            got: values.len(),
+        });
+    }
+
+    for (v, c) in std::iter::zip(values, user_columns) {
+        check_value(v, c.column_type)?;
+    }
+
+    Ok(())
+}
+fn typecheck_select(stmt: &BoundSelectStatement) -> Result<(), Error> {
+    // Collect all tables (base + joins)
+    let mut tables: Vec<&Table> = vec![stmt.table];
+    tables.extend(stmt.joins.iter().map(|j| j.on_table));
+
+    stmt.joins
+        .iter()
+        .try_for_each(|clause| typecheck_join_clause(clause, &tables))?;
+
+    stmt.where_clause
+        .as_ref()
+        .map(|clause| typecheck_where_clause(clause, &tables))
+        .transpose()?;
+
+    stmt.limit_clause
+        .as_ref()
+        .map(typecheck_limit_clause)
+        .transpose()?;
+
+    stmt.orderby_clause
+        .as_ref()
+        .map(typecheck_orderby_clause)
+        .transpose()?;
+
+    Ok(())
+}
+
+fn typecheck_delete(stmt: &BoundDeleteStatement) -> Result<(), Error> {
+    let tables = [stmt.table];
+    stmt.where_clause
+        .as_ref()
+        .map(|clause| typecheck_where_clause(clause, &tables))
+        .transpose()?;
+
+    Ok(())
+}
+
+/* DISPATCH */
 pub fn typecheck(stmt: &BoundStatement) -> Result<(), Error> {
     match stmt {
         BoundStatement::Insert(s) => typecheck_insert(s),
@@ -141,6 +195,7 @@ pub fn typecheck(stmt: &BoundStatement) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sql::ast::QualifiedIdentifier;
     use crate::storage::Table;
     use crate::storage::pager::Pager;
     use crate::types::ColumnType;
@@ -227,7 +282,7 @@ mod tests {
     fn test_typecheck_expr_literal_number() {
         let table = make_test_table();
         let expr = Expression::Literal(Value::Number(OrderedFloat(42.0)));
-        let result = typecheck_expression(&expr, &table).unwrap();
+        let result = typecheck_expression(&expr, &[&table]).unwrap();
         assert_eq!(result, Type::Number);
     }
 
@@ -235,23 +290,29 @@ mod tests {
     fn test_typecheck_expr_literal_string() {
         let table = make_test_table();
         let expr = Expression::Literal(Value::Varchar("hello".to_string()));
-        let result = typecheck_expression(&expr, &table).unwrap();
+        let result = typecheck_expression(&expr, &[&table]).unwrap();
         assert!(matches!(result, Type::Varchar(_)));
     }
 
     #[test]
     fn test_typecheck_expr_identifier() {
         let table = make_test_table();
-        let expr = Expression::Identifier("id".to_string());
-        let result = typecheck_expression(&expr, &table).unwrap();
+        let expr = Expression::Identifier(QualifiedIdentifier {
+            qualifier: None,
+            name: "id".to_string(),
+        });
+        let result = typecheck_expression(&expr, &[&table]).unwrap();
         assert_eq!(result, Type::Number);
     }
 
     #[test]
     fn test_typecheck_expr_unknown_column() {
         let table = make_test_table();
-        let expr = Expression::Identifier("nonexistent".to_string());
-        let result = typecheck_expression(&expr, &table);
+        let expr = Expression::Identifier(QualifiedIdentifier {
+            qualifier: None,
+            name: "nonexistent".to_string(),
+        });
+        let result = typecheck_expression(&expr, &[&table]);
         assert!(result.is_err());
     }
 
@@ -263,7 +324,7 @@ mod tests {
             lhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(1.0)))),
             rhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(2.0)))),
         };
-        let result = typecheck_expression(&expr, &table).unwrap();
+        let result = typecheck_expression(&expr, &[&table]).unwrap();
         assert_eq!(result, Type::Bool);
     }
 
@@ -275,7 +336,7 @@ mod tests {
             lhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(1.0)))),
             rhs: Box::new(Expression::Literal(Value::Varchar("hello".to_string()))),
         };
-        let result = typecheck_expression(&expr, &table);
+        let result = typecheck_expression(&expr, &[&table]);
         assert!(result.is_err());
     }
 
@@ -287,7 +348,7 @@ mod tests {
             lhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(1.0)))),
             rhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(2.0)))),
         };
-        let result = typecheck_expression(&expr, &table).unwrap();
+        let result = typecheck_expression(&expr, &[&table]).unwrap();
         assert_eq!(result, Type::Number);
     }
 
@@ -299,7 +360,7 @@ mod tests {
             lhs: Box::new(Expression::Literal(Value::Varchar("a".to_string()))),
             rhs: Box::new(Expression::Literal(Value::Varchar("b".to_string()))),
         };
-        let result = typecheck_expression(&expr, &table);
+        let result = typecheck_expression(&expr, &[&table]);
         assert!(result.is_err());
     }
 
@@ -311,7 +372,7 @@ mod tests {
             lhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(1.0)))),
             rhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(2.0)))),
         };
-        let result = typecheck_expression(&expr, &table).unwrap();
+        let result = typecheck_expression(&expr, &[&table]).unwrap();
         assert_eq!(result, Type::Bool);
     }
 
@@ -323,7 +384,7 @@ mod tests {
             lhs: Box::new(Expression::Literal(Value::Varchar("a".to_string()))),
             rhs: Box::new(Expression::Literal(Value::Varchar("b".to_string()))),
         };
-        let result = typecheck_expression(&expr, &table);
+        let result = typecheck_expression(&expr, &[&table]);
         assert!(result.is_err());
     }
 
@@ -335,7 +396,7 @@ mod tests {
             lhs: Box::new(Expression::Literal(Value::Bool(true))),
             rhs: Box::new(Expression::Literal(Value::Bool(false))),
         };
-        let result = typecheck_expression(&expr, &table).unwrap();
+        let result = typecheck_expression(&expr, &[&table]).unwrap();
         assert_eq!(result, Type::Bool);
     }
 
@@ -347,7 +408,7 @@ mod tests {
             lhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(1.0)))),
             rhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(2.0)))),
         };
-        let result = typecheck_expression(&expr, &table);
+        let result = typecheck_expression(&expr, &[&table]);
         assert!(result.is_err());
     }
 
@@ -357,10 +418,13 @@ mod tests {
         // id == 42 (both numbers)
         let expr = Expression::BinaryOp {
             op: Operator::Eq,
-            lhs: Box::new(Expression::Identifier("id".to_string())),
+            lhs: Box::new(Expression::Identifier(QualifiedIdentifier {
+                qualifier: None,
+                name: "id".to_string(),
+            })),
             rhs: Box::new(Expression::Literal(Value::Number(OrderedFloat(42.0)))),
         };
-        let result = typecheck_expression(&expr, &table).unwrap();
+        let result = typecheck_expression(&expr, &[&table]).unwrap();
         assert_eq!(result, Type::Bool);
     }
 }

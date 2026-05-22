@@ -14,10 +14,10 @@ pub fn execute_insert(stmt: &BoundInsertStatement) -> Result<u64, Error> {
 
     // Prepend system columns to user values
     let mut all_values = vec![
-        Value::Number(OrderedFloat(rowid as f64)),    // _rowid
-        Value::Number(OrderedFloat(0.0)),             // _tidmin (dummy)
-        Value::Number(OrderedFloat(0.0)),             // _tidmax (dummy)
-        Value::Bytes(vec![0u8; NULL_BITMAP_SIZE]),    // _null_bitmap (all non-null)
+        Value::Number(OrderedFloat(rowid as f64)), // _rowid
+        Value::Number(OrderedFloat(0.0)),          // _tidmin (dummy)
+        Value::Number(OrderedFloat(0.0)),          // _tidmax (dummy)
+        Value::Bytes(vec![0u8; NULL_BITMAP_SIZE]), // _null_bitmap (all non-null)
     ];
     all_values.extend(stmt.values.iter().cloned());
 
@@ -44,8 +44,8 @@ pub fn execute_delete(stmt: &BoundDeleteStatement) -> Result<u64, Error> {
         let values: HashMap<&str, Value> =
             col_names.iter().copied().zip(row.iter().cloned()).collect();
 
-        if let Some(expr) = &stmt.expr {
-            match eval_expr(expr, &values)? {
+        if let Some(wc) = &stmt.where_clause {
+            match eval_expr(&wc.0, &values)? {
                 Value::Bool(true) => {}
                 Value::Bool(false) => {
                     cursor.advance()?;
@@ -93,8 +93,8 @@ pub fn execute_select(stmt: &BoundSelectStatement) -> Result<Vec<Vec<Value>>, Er
         let values: HashMap<&str, Value> =
             col_names.iter().copied().zip(row.iter().cloned()).collect();
 
-        if let Some(expr) = &stmt.expr {
-            match eval_expr(expr, &values)? {
+        if let Some(wc) = &stmt.where_clause {
+            match eval_expr(&wc.0, &values)? {
                 Value::Bool(true) => {}
                 Value::Bool(false) => {
                     cursor.advance()?;

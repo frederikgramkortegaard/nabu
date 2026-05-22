@@ -17,7 +17,7 @@ use types::{ColumnType, QueryResult};
 fn run_query(db: &Database, query: &str) -> Result<QueryResult, Error> {
     let tokens = LexerContext::lex(query)?;
     let ast = ParserContext::parse(&tokens)?;
-    let bound = analyzer::bound::bind(ast, db)?;
+    let bound = analyzer::bind(ast, db)?;
     analyzer::typechecker::typecheck(&bound)?;
     let result = core::engine::execute(&bound)?;
     Ok(result)
@@ -26,7 +26,7 @@ fn run_query(db: &Database, query: &str) -> Result<QueryResult, Error> {
 fn main() {
     env_logger::init();
 
-    let mut mydb = Database::new("test.db").unwrap();
+    let mut mydb = Database::memory().unwrap();
 
     println!("Table exists: {}", mydb.table_exists("MyTable"));
 
@@ -43,9 +43,17 @@ fn main() {
         println!("Table created");
 
         println!("Inserting row...");
+        let result = run_query(
+            &mydb,
+            "INSERT (1, 25, \"alice\", \"alice@example.com\") INTO MyTable",
+        );
+        println!("Insert result: {:?}", result);
     }
 
     println!("Selecting...");
-    let result = run_query(&mydb, "SELECT id, username FROM MyTable");
+    let result = run_query(
+        &mydb,
+        "SELECT id, username FROM MyTable JOIN MySecondTable ON MyTable.username == MySecondTable.username WHERE age >= 18 ORDERBY age LIMIT 5,3",
+    );
     println!("Select result: {:?}", result);
 }

@@ -47,6 +47,11 @@ impl Deref for Row {
         &self.0
     }
 }
+// TODO: Arrow-compatible types for vectorized execution
+// Number -> Float64 (could split into Int8/16/32/64, UInt8/16/32/64, Float32/Float64)
+// Varchar -> Utf8, Bool -> Boolean, Bytes -> Binary
+// Missing: Date32, Date64, Timestamp, Time32, Time64, Duration (temporal)
+// Missing: List, Struct, Map (nested)
 #[derive(Debug, Clone, Copy)]
 pub enum ColumnType {
     Number,

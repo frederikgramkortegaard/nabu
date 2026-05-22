@@ -1,9 +1,15 @@
-use super::ast::{
-    DeleteStatement, Expression, InsertStatement, Operator, SelectStatement, Statement, Value,
-};
+use super::ast::*;
 use super::lexer::{Token, TokenType};
 use crate::error::Error;
 use ordered_float::OrderedFloat;
+
+#[derive(Debug, Default)]
+pub struct Clauses {
+    pub where_clause: Option<WhereClause>,
+    pub joins: Vec<JoinClause>,
+    pub limit: Option<LimitClause>,
+    pub orderby: Option<OrderByClause>,
+}
 
 /// The parser context that maintains state during parsing.
 #[derive(Debug, Clone)]
@@ -65,6 +71,105 @@ impl<'a> ParserContext<'a> {
             }
             _ => None,
         }
+    }
+
+    fn parse_clauses(&mut self, allowed: &[ClauseKind]) -> Result<Clauses, Error> {
+        use std::collections::HashSet;
+        let allowed_set: HashSet<ClauseKind> = allowed.iter().copied().collect();
+        let mut clauses = Clauses::default();
+
+        macro_rules! check_allowed {
+            ($kind:expr) => {
+                if !allowed_set.contains(&$kind) {
+                    return Err(Error::Parse(format!(
+                        "Clause {:?} not allowed in this statement",
+                        $kind
+                    )));
+                }
+            };
+        }
+
+        while let Some(token) = self.peek() {
+            match &token.tag {
+                TokenType::Where => {
+                    check_allowed!(ClauseKind::Where);
+                    self.consume();
+                    let expr = self.parse_expression()?;
+                    clauses.where_clause = Some(WhereClause(Box::new(expr)));
+                }
+                TokenType::Join
+                | TokenType::InnerJoin
+                | TokenType::LeftOuterJoin
+                | TokenType::RightOuterJoin
+                | TokenType::FullOuterJoin
+                | TokenType::CrossJoin => {
+                    check_allowed!(ClauseKind::Join);
+                    let t = token.tag.clone(); //@TODO hacky
+                    self.consume();
+
+                    let Some(table) = self.consume_identifier() else {
+                        return Err(Error::Parse("Expected table name after JOIN".into()));
+                    };
+
+                    self.consume_assert(TokenType::On, "Expected ON after JOIN".into())?;
+
+                    let on = self.parse_expression()?;
+
+                    let kind = JoinKind::from_token(&t)
+                        .ok_or_else(|| Error::Parse(format!("unknown join kind")))?;
+                    clauses.joins.push(JoinClause {
+                        kind,
+                        table,
+                        on: Box::new(on),
+                    });
+                }
+                TokenType::Limit => {
+                    check_allowed!(ClauseKind::Limit);
+                    self.consume();
+
+                    let limit = self
+                        .consume_assert(TokenType::Number, "Expected number after LIMIT".into())?
+                        .lexeme
+                        .parse::<usize>()
+                        .map_err(|_| Error::Parse("LIMIT should be a valid integer".into()))?;
+
+                    let mut offset: usize = 0;
+                    if self.consume_optional(TokenType::Comma).is_some() {
+                        offset = self
+                            .consume_assert(TokenType::Number, "Expected offset number".into())?
+                            .lexeme
+                            .parse::<usize>()
+                            .map_err(|_| Error::Parse("OFFSET should be a valid integer".into()))?;
+                    }
+
+                    clauses.limit = Some(LimitClause { limit, offset })
+                }
+                TokenType::OrderBy => {
+                    check_allowed!(ClauseKind::OrderBy);
+                    self.consume();
+
+                    let first = self
+                        .consume_assert(
+                            TokenType::Identifier,
+                            "Expected column identifier after ORDER BY".into(),
+                        )?
+                        .lexeme;
+                    let column = match self.consume_optional(TokenType::Dot) {
+                        Some(_) => {
+                            let name = self
+                                .consume_assert(TokenType::Identifier, "Expected column name".into())?
+                                .lexeme;
+                            QualifiedIdentifier { qualifier: Some(first), name }
+                        }
+                        None => QualifiedIdentifier { qualifier: None, name: first },
+                    };
+                    clauses.orderby = Some(OrderByClause { column })
+                }
+                _ => break,
+            }
+        }
+
+        Ok(clauses)
     }
 
     fn parse_primary(&mut self) -> Result<Value, Error> {
@@ -193,7 +298,19 @@ impl<'a> ParserContext<'a> {
                 }
                 TokenType::Identifier => {
                     let tok = self.consume().unwrap();
-                    Ok(Expression::Identifier(tok.lexeme))
+                    match self.consume_optional(TokenType::Dot) {
+                        Some(_) => {
+                            let name = self.consume_assert(TokenType::Identifier, "".into())?;
+                            Ok(Expression::Identifier(QualifiedIdentifier {
+                                qualifier: Some(tok.lexeme),
+                                name: name.lexeme,
+                            }))
+                        }
+                        None => Ok(Expression::Identifier(QualifiedIdentifier {
+                            qualifier: None,
+                            name: tok.lexeme,
+                        })),
+                    }
                 }
                 _ => Err(Error::Parse(format!(
                     "Unexpected token in expression: {:?}",
@@ -263,16 +380,20 @@ impl<'a> ParserContext<'a> {
                         Error::Parse("Expected table name after FROM".to_string())
                     })?;
 
-                    let expr = if self.consume_optional(TokenType::Where).is_some() {
-                        Some(Box::new(self.parse_expression()?))
-                    } else {
-                        None
-                    };
+                    let clauses = self.parse_clauses(&[
+                        ClauseKind::Where,
+                        ClauseKind::Join,
+                        ClauseKind::Limit,
+                        ClauseKind::OrderBy,
+                    ])?;
 
                     Ok(Statement::Select(SelectStatement {
                         columns,
                         table,
-                        expr,
+                        joins: clauses.joins,
+                        where_clause: clauses.where_clause,
+                        limit_clause: clauses.limit,
+                        orderby_clause: clauses.orderby,
                     }))
                 }
 
@@ -280,19 +401,18 @@ impl<'a> ParserContext<'a> {
                     self.consume();
                     self.consume_optional(TokenType::LParen);
 
-                    self.consume_assert(TokenType::From, "Expected FROM after SELECT".to_string())?;
+                    self.consume_assert(TokenType::From, "Expected FROM after DELETE".to_string())?;
 
                     let table = self.consume_identifier().ok_or_else(|| {
                         Error::Parse("Expected table name after FROM".to_string())
                     })?;
 
-                    let expr = if self.consume_optional(TokenType::Where).is_some() {
-                        Some(Box::new(self.parse_expression()?))
-                    } else {
-                        None
-                    };
+                    let clauses = self.parse_clauses(&[ClauseKind::Where])?;
 
-                    Ok(Statement::Delete(DeleteStatement { table, expr }))
+                    Ok(Statement::Delete(DeleteStatement {
+                        table,
+                        where_clause: clauses.where_clause,
+                    }))
                 }
                 TokenType::Insert => {
                     self.consume();
@@ -385,7 +505,7 @@ mod tests {
     #[test]
     fn test_parse_expr_identifier() {
         let expr = parse_expr("age").unwrap();
-        assert!(matches!(expr, Expression::Identifier(name) if name == "age"));
+        assert!(matches!(expr, Expression::Identifier(id) if id.name == "age"));
     }
 
     #[test]
