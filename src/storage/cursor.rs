@@ -1,7 +1,7 @@
 use super::node::Node;
 use super::table::Table;
 use crate::error::Error;
-use crate::types::{Row, Value};
+use super::record::Record;
 
 #[derive(Debug)]
 pub struct Cursor<'a> {
@@ -37,7 +37,7 @@ impl Cursor<'_> {
         self.table.read_node(self.page_num)
     }
 
-    pub fn row(&self) -> Result<Row, Error> {
+    pub fn row(&self) -> Result<Record, Error> {
         let node = self.read_node()?;
         match node {
             Node::Leaf { cells, .. } => Ok(cells[self.cell_num].1.clone()),

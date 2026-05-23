@@ -1,12 +1,5 @@
-pub use crate::types::{Type, Value};
+pub use crate::shared::Value;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ClauseKind {
-    Where,
-    Join,
-    OrderBy,
-    Limit,
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JoinKind {
     Inner,
@@ -30,32 +23,13 @@ impl JoinKind {
     }
 }
 
-#[derive(Debug)]
-pub struct WhereClause(pub Box<Expression>);
-
-#[derive(Debug)]
-pub struct JoinClause {
-    pub kind: JoinKind,
-    pub table: String,
-    pub on: Box<Expression>,
-}
-#[derive(Debug)]
-pub struct LimitClause {
-    pub limit: usize,
-    pub offset: usize,
-}
 #[derive(Debug, Clone)]
 pub struct QualifiedIdentifier {
     pub qualifier: Option<String>,
     pub name: String,
 }
 
-#[derive(Debug)]
-pub struct OrderByClause {
-    pub column: QualifiedIdentifier,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum Operator {
     Eq,
     Neq,
@@ -85,30 +59,29 @@ pub enum Expression {
 }
 
 #[derive(Debug)]
-pub struct InsertStatement {
-    pub values: Vec<Value>,
-    pub table_name: String,
-}
-
-#[derive(Debug)]
-pub struct SelectStatement {
-    pub columns: Vec<String>,
+pub struct Join {
+    pub kind: JoinKind,
     pub table: String,
-    pub joins: Vec<JoinClause>,
-    pub where_clause: Option<WhereClause>,
-    pub limit_clause: Option<LimitClause>,
-    pub orderby_clause: Option<OrderByClause>,
-}
-
-#[derive(Debug)]
-pub struct DeleteStatement {
-    pub table: String,
-    pub where_clause: Option<WhereClause>,
+    pub on: Box<Expression>,
 }
 
 #[derive(Debug)]
 pub enum Statement {
-    Insert(InsertStatement),
-    Select(SelectStatement),
-    Delete(DeleteStatement),
+    Insert {
+        table: String,
+        values: Vec<Value>,
+    },
+    Select {
+        table: String,
+        columns: Vec<QualifiedIdentifier>,
+        joins: Vec<Join>,
+        filter: Option<Box<Expression>>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        order_by: Option<QualifiedIdentifier>,
+    },
+    Delete {
+        table: String,
+        filter: Option<Box<Expression>>,
+    },
 }

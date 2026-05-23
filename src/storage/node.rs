@@ -1,5 +1,7 @@
 use crate::error::Error;
-use crate::types::{Column, Row, Value};
+use crate::shared::{Field, FieldExt};
+use super::record::Record;
+use crate::shared::Value;
 
 pub const HEADER_SIZE: usize = 12;
 
@@ -40,7 +42,7 @@ pub enum Node {
     },
     Leaf {
         parent: Option<usize>,
-        cells: Vec<(Value, Row)>,
+        cells: Vec<(Value, Record)>,
         next_leaf: Option<usize>,
     },
 }
@@ -117,7 +119,7 @@ impl Node {
         }
     }
 
-    pub fn read_child_at(src: &[u8], n: usize, key_column: &Column) -> Result<usize, Error> {
+    pub fn read_child_at(src: &[u8], n: usize, key_column: &Field) -> Result<usize, Error> {
         if Node::read_is_leaf(src) {
             return Err(Error::WrongNodeType(
                 "read_child_at can only be called on data that belongs to an internal node".into(),
@@ -135,10 +137,11 @@ impl Node {
 
         // The right-most child is stored at src[8..12] for easy traversal, because of that
         // we need to handle that case specially
+        let key_size = key_column.byte_size();
         let smart_src: [u8; 4] = if n == num_cells {
             src[8..12].try_into().unwrap()
         } else {
-            let offset = HEADER_SIZE + n * (4 + key_column.column_size);
+            let offset = HEADER_SIZE + n * (4 + key_size);
             src[offset..offset + 4].try_into().unwrap()
         };
 
@@ -156,10 +159,10 @@ impl Node {
     pub fn read_row_at(
         src: &[u8],
         n: usize,
-        key_column: &Column,
-        columns: Vec<&Column>,
+        key_column: &Field,
+        columns: Vec<&Field>,
         row_size: usize,
-    ) -> Result<Row, Error> {
+    ) -> Result<Record, Error> {
         if !Node::read_is_leaf(src) {
             return Err(Error::WrongNodeType(
                 "read_row_at can only be called on leaf nodes".into(),
@@ -174,14 +177,15 @@ impl Node {
             });
         }
 
-        let offset = HEADER_SIZE + n * (key_column.column_size + row_size) + key_column.column_size;
-        Ok(Row::deserialize(&columns, &src[offset..offset + row_size]))
+        let key_size = key_column.byte_size();
+        let offset = HEADER_SIZE + n * (key_size + row_size) + key_size;
+        Ok(Record::deserialize(&columns, &src[offset..offset + row_size]))
     }
 
     pub fn read_key_at(
         src: &[u8],
         n: usize,
-        key_column: &Column,
+        key_column: &Field,
         row_size: usize,
     ) -> Result<Value, Error> {
         let num_cells = Self::read_num_cells(src);
@@ -192,10 +196,11 @@ impl Node {
             });
         }
 
+        let key_size = key_column.byte_size();
         let offset = if Node::read_is_leaf(src) {
-            HEADER_SIZE + n * (key_column.column_size + row_size)
+            HEADER_SIZE + n * (key_size + row_size)
         } else {
-            HEADER_SIZE + n * (4 + key_column.column_size) + 4
+            HEADER_SIZE + n * (4 + key_size) + 4
         };
 
         Ok(Value::deserialize(&src[offset..], key_column))
@@ -206,7 +211,7 @@ impl Node {
         dest: &mut [u8],
         key_size: usize,
         row_size: usize,
-        columns: &[&Column],
+        columns: &[&Field],
     ) {
         dest[0] = u8::from(!matches!(self, Node::Internal { .. }));
         dest[1] = u8::from(!self.is_root());
@@ -245,14 +250,14 @@ impl Node {
                 for (key, row) in cells {
                     key.serialize(&mut dest[offset..offset + key_size], key_size);
                     offset += key_size;
-                    row.serialize(columns.to_vec(), &mut dest[offset..]);
+                    row.serialize(columns, &mut dest[offset..]);
                     offset += row_size;
                 }
             }
         }
     }
 
-    pub fn deserialize(src: &[u8], key_size: usize, row_size: usize, columns: &[&Column]) -> Node {
+    pub fn deserialize(src: &[u8], key_size: usize, row_size: usize, columns: &[&Field]) -> Node {
         let is_leaf = src[0] != 0;
 
         let parent = Self::read_parent(src);
@@ -275,7 +280,7 @@ impl Node {
                 let key = Value::deserialize(&src[offset..], &columns[0]);
                 offset += key_size;
 
-                let row = Row::deserialize(&columns.to_vec(), &src[offset..offset + row_size]);
+                let row = Record::deserialize(&columns.to_vec(), &src[offset..offset + row_size]);
                 offset += row_size;
 
                 cells.push((key, row));
@@ -317,15 +322,17 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ColumnType;
+    use arrow::datatypes::DataType;
     use ordered_float::OrderedFloat;
+    use std::collections::HashMap;
 
     fn num(n: f64) -> Value {
-        Value::Number(OrderedFloat(n))
+        Value::Float64(OrderedFloat(n))
     }
 
-    fn make_key_column() -> Column {
-        Column::new("id".into(), ColumnType::Number)
+    fn make_key_column() -> Field {
+        let metadata = HashMap::from([("size".to_string(), "8".to_string())]);
+        Field::new("id", DataType::Float64, false).with_metadata(metadata)
     }
 
     // Manually build a leaf node header
@@ -415,16 +422,16 @@ mod tests {
     #[test]
     fn test_serialize_deserialize_leaf_roundtrip() {
         let key_col = make_key_column();
-        let cols: Vec<&Column> = vec![&key_col];
-        let key_size = key_col.column_size;
+        let cols: Vec<&Field> = vec![&key_col];
+        let key_size = key_col.byte_size();
         let row_size = key_size;
 
         let node = Node::Leaf {
             parent: None,
             cells: vec![
-                (num(1.0), Row(vec![num(1.0)])),
-                (num(2.0), Row(vec![num(2.0)])),
-                (num(3.0), Row(vec![num(3.0)])),
+                (num(1.0), Record(vec![num(1.0)])),
+                (num(2.0), Record(vec![num(2.0)])),
+                (num(3.0), Record(vec![num(3.0)])),
             ],
             next_leaf: Some(5),
         };
@@ -453,8 +460,8 @@ mod tests {
     #[test]
     fn test_serialize_deserialize_internal_roundtrip() {
         let key_col = make_key_column();
-        let cols: Vec<&Column> = vec![&key_col];
-        let key_size = key_col.column_size;
+        let cols: Vec<&Field> = vec![&key_col];
+        let key_size = key_col.byte_size();
         let row_size = key_size;
 
         let node = Node::Internal {
@@ -487,15 +494,15 @@ mod tests {
     #[test]
     fn test_read_key_at_leaf() {
         let key_col = make_key_column();
-        let cols: Vec<&Column> = vec![&key_col];
-        let key_size = key_col.column_size;
+        let cols: Vec<&Field> = vec![&key_col];
+        let key_size = key_col.byte_size();
         let row_size = key_size;
 
         let node = Node::Leaf {
             parent: None,
             cells: vec![
-                (num(100.0), Row(vec![num(100.0)])),
-                (num(200.0), Row(vec![num(200.0)])),
+                (num(100.0), Record(vec![num(100.0)])),
+                (num(200.0), Record(vec![num(200.0)])),
             ],
             next_leaf: None,
         };
@@ -517,8 +524,8 @@ mod tests {
     #[test]
     fn test_read_key_at_internal() {
         let key_col = make_key_column();
-        let cols: Vec<&Column> = vec![&key_col];
-        let key_size = key_col.column_size;
+        let cols: Vec<&Field> = vec![&key_col];
+        let key_size = key_col.byte_size();
         let row_size = key_size;
 
         let node = Node::Internal {
@@ -544,8 +551,8 @@ mod tests {
     #[test]
     fn test_read_child_at() {
         let key_col = make_key_column();
-        let cols: Vec<&Column> = vec![&key_col];
-        let key_size = key_col.column_size;
+        let cols: Vec<&Field> = vec![&key_col];
+        let key_size = key_col.byte_size();
         let row_size = key_size;
 
         let node = Node::Internal {
@@ -566,13 +573,13 @@ mod tests {
     #[test]
     fn test_read_child_at_leaf_errors() {
         let key_col = make_key_column();
-        let cols: Vec<&Column> = vec![&key_col];
-        let key_size = key_col.column_size;
+        let cols: Vec<&Field> = vec![&key_col];
+        let key_size = key_col.byte_size();
         let row_size = key_size;
 
         let node = Node::Leaf {
             parent: None,
-            cells: vec![(num(1.0), Row(vec![num(1.0)]))],
+            cells: vec![(num(1.0), Record(vec![num(1.0)]))],
             next_leaf: None,
         };
 

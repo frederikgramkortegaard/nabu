@@ -2,32 +2,34 @@ use super::btree::BTree;
 use super::cursor::Cursor;
 use super::node::Node;
 use super::pager::Pager;
-use crate::constants::{MAX_COLUMNS, MAX_COLUMNS_STR_LEN, MAX_TABLE_NAME_LEN, MAX_VARCHAR_LEN, NULL_BITMAP_SIZE};
+use crate::constants::{MAX_COLUMNS_STR_LEN, MAX_TABLE_NAME_LEN, NULL_BITMAP_SIZE};
 use crate::error::Error;
-use crate::types::{Column, ColumnType, Row, Value};
+use crate::shared::{field_with_size, parse_field, serialize_field, DataType, Field, FieldExt};
+use super::record::Record;
+use crate::shared::Value;
 use indexmap::IndexMap;
 use ordered_float::OrderedFloat;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// System columns prepended to every user table
-fn system_columns() -> IndexMap<String, Column> {
+fn system_columns() -> IndexMap<String, Field> {
     IndexMap::from([
         (
             "_rowid".to_string(),
-            Column::new("_rowid".to_string(), ColumnType::Number),
+            field_with_size("_rowid", DataType::Float64, 8),
         ),
         (
             "_tidmin".to_string(),
-            Column::new("_tidmin".to_string(), ColumnType::Number),
+            field_with_size("_tidmin", DataType::Float64, 8),
         ),
         (
             "_tidmax".to_string(),
-            Column::new("_tidmax".to_string(), ColumnType::Number),
+            field_with_size("_tidmax", DataType::Float64, 8),
         ),
         (
             "_null_bitmap".to_string(),
-            Column::new("_null_bitmap".to_string(), ColumnType::Bytes(NULL_BITMAP_SIZE)),
+            field_with_size("_null_bitmap", DataType::FixedSizeBinary(NULL_BITMAP_SIZE as i32), NULL_BITMAP_SIZE),
         ),
     ])
 }
@@ -35,7 +37,7 @@ fn system_columns() -> IndexMap<String, Column> {
 #[derive(Debug)]
 pub struct TableBuilder {
     name: String,
-    columns: IndexMap<String, Column>,
+    columns: IndexMap<String, Field>,
     error: Option<Error>,
 }
 
@@ -43,7 +45,7 @@ pub struct TableBuilder {
 pub struct TableMetadata {
     pub name: String,
     pub root_page: usize,
-    pub user_columns: IndexMap<String, Column>,
+    pub user_columns: IndexMap<String, Field>,
     pub primary_key_index: usize,
 }
 
@@ -54,57 +56,57 @@ impl TableMetadata {
             root_page: table.btree.root_page.get(),
             user_columns: table
                 .user_columns()
-                .map(|c| (c.name.clone(), c.clone()))
+                .map(|c| (c.name().to_string(), c.clone()))
                 .collect(),
             primary_key_index: table.primary_key_index,
         }
     }
 
-    /// Convert to a Row for storing in system table
-    pub fn to_row(&self) -> Row {
+    /// Convert to a Record for storing in system table
+    pub fn to_row(&self) -> Record {
         assert!(self.name.len() <= MAX_TABLE_NAME_LEN);
 
         let columns_str = self
             .user_columns
             .values()
-            .map(|c| c.to_string())
+            .map(|c| serialize_field(c))
             .collect::<Vec<_>>()
             .join(";");
 
         assert!(columns_str.len() <= MAX_COLUMNS_STR_LEN);
 
-        Row(vec![
-            Value::Varchar(self.name.clone()),
-            Value::Number(OrderedFloat(self.root_page as f64)),
-            Value::Varchar(columns_str),
-            Value::Number(OrderedFloat(self.primary_key_index as f64)),
+        Record(vec![
+            Value::Utf8(self.name.clone()),
+            Value::Float64(OrderedFloat(self.root_page as f64)),
+            Value::Utf8(columns_str),
+            Value::Float64(OrderedFloat(self.primary_key_index as f64)),
         ])
     }
 
-    /// Parse from a Row read from system table
-    pub fn from_row(row: &Row) -> Result<Self, Error> {
-        let Value::Varchar(name) = &row[0] else {
-            return Err(Error::CorruptedTree("expected name as varchar".into()));
+    /// Parse from a Record read from system table
+    pub fn from_row(row: &Record) -> Result<Self, Error> {
+        let Value::Utf8(name) = &row[0] else {
+            return Err(Error::CorruptedTree("expected name as Utf8".into()));
         };
 
-        let Value::Number(root_page) = &row[1] else {
-            return Err(Error::CorruptedTree("expected root_page as number".into()));
+        let Value::Float64(root_page) = &row[1] else {
+            return Err(Error::CorruptedTree("expected root_page as Float64".into()));
         };
 
-        let Value::Varchar(columns_str) = &row[2] else {
-            return Err(Error::CorruptedTree("expected columns as varchar".into()));
+        let Value::Utf8(columns_str) = &row[2] else {
+            return Err(Error::CorruptedTree("expected columns as Utf8".into()));
         };
 
-        let Value::Number(primary_key_index) = &row[3] else {
+        let Value::Float64(primary_key_index) = &row[3] else {
             return Err(Error::CorruptedTree(
-                "expected primary_key_index as number".into(),
+                "expected primary_key_index as Float64".into(),
             ));
         };
 
-        let mut user_columns = IndexMap::new();
+        let mut user_columns: IndexMap<String, Field> = IndexMap::new();
         for col_str in columns_str.split(';') {
-            let col: Column = col_str.parse().map_err(|e| Error::CorruptedTree(e))?;
-            user_columns.insert(col.name.clone(), col);
+            let col = parse_field(col_str).map_err(Error::CorruptedTree)?;
+            user_columns.insert(col.name().to_string(), col);
         }
 
         Ok(TableMetadata {
@@ -131,7 +133,7 @@ impl TableBuilder {
         }
     }
 
-    pub fn column(mut self, name: impl Into<String>, column_type: ColumnType) -> Self {
+    pub fn column(mut self, name: impl Into<String>, data_type: DataType, size: usize) -> Self {
         if self.error.is_some() {
             return self;
         }
@@ -151,17 +153,8 @@ impl TableBuilder {
             self.error = Some(Error::DuplicateColumn(name));
             return self;
         }
-        if let ColumnType::Varchar(len) = column_type {
-            if len > MAX_VARCHAR_LEN {
-                self.error = Some(Error::VarcharTooLong {
-                    max: MAX_VARCHAR_LEN,
-                    got: len,
-                });
-                return self;
-            }
-        }
         self.columns
-            .insert(name.clone(), Column::new(name, column_type));
+            .insert(name.clone(), field_with_size(&name, data_type, size));
         self
     }
 
@@ -175,7 +168,7 @@ impl TableBuilder {
         let columns_str_len: usize = self
             .columns
             .values()
-            .map(|c| c.to_string().len())
+            .map(|c| serialize_field(c).len())
             .sum::<usize>()
             + self.columns.len().saturating_sub(1); // account for ';' separators
         if columns_str_len > MAX_COLUMNS_STR_LEN {
@@ -188,7 +181,7 @@ impl TableBuilder {
 #[derive(Debug)]
 pub struct Table {
     pub name: String,
-    pub columns: IndexMap<String, Column>,
+    pub columns: IndexMap<String, Field>,
     pub next_row_id: Cell<usize>,
     pub primary_key_index: usize,
     pub btree: BTree,
@@ -197,33 +190,33 @@ pub struct Table {
 impl Table {
     pub fn new(
         name: String,
-        columns: impl IntoIterator<Item = (String, ColumnType)>,
+        columns: impl IntoIterator<Item = (String, DataType, usize)>,
         pager: Rc<RefCell<Pager>>,
     ) -> Result<Self, Error> {
-        let columns: IndexMap<String, Column> = columns
+        let columns: IndexMap<String, Field> = columns
             .into_iter()
-            .map(|(name, column_type)| (name.clone(), Column::new(name, column_type)))
+            .map(|(name, data_type, size)| (name.clone(), field_with_size(&name, data_type, size)))
             .collect();
 
         Self::from_columns(name, columns, pager, false)
     }
 
-    pub fn get_column(&self, column_name: &str) -> Option<&Column> {
+    pub fn get_column(&self, column_name: &str) -> Option<&Field> {
         self.columns.get(column_name)
     }
 
-    pub fn get_user_column(&self, column_name: &str) -> Option<&Column> {
+    pub fn get_user_column(&self, column_name: &str) -> Option<&Field> {
         if column_name.starts_with('_') {
             return None;
         }
         self.columns.get(column_name)
     }
 
-    pub fn key_column(&self) -> &Column {
+    pub fn key_column(&self) -> &Field {
         self.columns.get_index(self.primary_key_index).unwrap().1
     }
 
-    fn columns(&self) -> Vec<&Column> {
+    fn columns(&self) -> Vec<&Field> {
         self.columns.values().collect()
     }
 
@@ -319,7 +312,7 @@ impl Table {
         self.btree.with_node_mut(page_num, &self.columns(), f)
     }
 
-    pub fn insert(&self, key: &Value, row: &Row) -> Result<(), Error> {
+    pub fn insert(&self, key: &Value, row: &Record) -> Result<(), Error> {
         self.btree.insert(key, row, &self.columns())
     }
 
@@ -339,7 +332,7 @@ impl Table {
 
     pub fn from_columns(
         name: String,
-        user_columns: IndexMap<String, Column>,
+        user_columns: IndexMap<String, Field>,
         pager: Rc<RefCell<Pager>>,
         clean: bool,
     ) -> Result<Self, Error> {
@@ -351,10 +344,10 @@ impl Table {
             cols
         };
 
-        let row_size: usize = columns.iter().map(|(_, c)| c.column_size).sum();
-        let key_size = columns[0].column_size;
+        let row_size: usize = columns.iter().map(|(_, c)| c.byte_size()).sum();
+        let key_size = columns[0].byte_size();
 
-        let cols: Vec<&Column> = columns.values().collect();
+        let cols: Vec<&Field> = columns.values().collect();
         let btree = BTree::new(row_size, key_size, pager, &cols);
 
         Ok(Table {
@@ -367,13 +360,13 @@ impl Table {
     }
 
     /// Returns only user-defined columns (excludes system columns)
-    pub fn user_columns(&self) -> impl Iterator<Item = &Column> {
+    pub fn user_columns(&self) -> impl Iterator<Item = &Field> {
         self.columns.values().skip(system_columns().len())
     }
 
     pub fn load(
         name: String,
-        user_columns: IndexMap<String, Column>,
+        user_columns: IndexMap<String, Field>,
         root_page: usize,
         pager: Rc<RefCell<Pager>>,
         clean: bool,
@@ -386,8 +379,8 @@ impl Table {
             cols
         };
 
-        let row_size: usize = columns.iter().map(|(_, c)| c.column_size).sum();
-        let key_size = columns[0].column_size;
+        let row_size: usize = columns.iter().map(|(_, c)| c.byte_size()).sum();
+        let key_size = columns[0].byte_size();
 
         let btree = BTree::load(root_page, row_size, key_size, pager);
 
@@ -412,14 +405,14 @@ mod tests {
 
     fn make_test_table() -> Table {
         TableBuilder::new("test")
-            .column("name", ColumnType::Varchar(32))
-            .column("age", ColumnType::Number)
+            .column("name", DataType::Utf8, 32)
+            .column("age", DataType::Float64, 8)
             .build(make_pager())
             .unwrap()
     }
 
     fn num(n: f64) -> Value {
-        Value::Number(OrderedFloat(n))
+        Value::Float64(OrderedFloat(n))
     }
 
     fn system_values() -> Vec<Value> {
@@ -427,7 +420,7 @@ mod tests {
             num(0.0), // _rowid (will be overwritten)
             num(0.0), // _tidmin
             num(0.0), // _tidmax
-            Value::Bytes(vec![0u8; crate::constants::NULL_BITMAP_SIZE]), // _null_bitmap
+            Value::Binary(vec![0u8; crate::constants::NULL_BITMAP_SIZE]), // _null_bitmap
         ]
     }
 
@@ -435,15 +428,15 @@ mod tests {
     fn test_table_builder() {
         let table = make_test_table();
         assert_eq!(table.name, "test");
-        // _rowid + _tidmin + _tidmax + _col_count + _null_bitmap + name + age = 7
+        // _rowid + _tidmin + _tidmax + _null_bitmap + name + age = 6
         assert_eq!(table.columns.len(), 6); // 4 system + 2 user
-        assert_eq!(table.key_column().name, "_rowid");
+        assert_eq!(table.key_column().name(), "_rowid");
     }
 
     #[test]
     fn test_table_builder_reserved_column() {
         let result = TableBuilder::new("test")
-            .column("_secret", ColumnType::Number)
+            .column("_secret", DataType::Float64, 8)
             .build(make_pager());
         assert!(matches!(result, Err(Error::ReservedColumnName(_))));
     }
@@ -451,8 +444,8 @@ mod tests {
     #[test]
     fn test_table_builder_duplicate_column() {
         let result = TableBuilder::new("test")
-            .column("name", ColumnType::Varchar(32))
-            .column("name", ColumnType::Number)
+            .column("name", DataType::Utf8, 32)
+            .column("name", DataType::Float64, 8)
             .build(make_pager());
         assert!(matches!(result, Err(Error::DuplicateColumn(_))));
     }
@@ -472,7 +465,7 @@ mod tests {
         ] {
             let name = format!("col{}name", invalid_char);
             let result = TableBuilder::new("test")
-                .column(&name, ColumnType::Number)
+                .column(&name, DataType::Float64, 8)
                 .build(make_pager());
             assert!(
                 matches!(result, Err(Error::InvalidColumnName { .. })),
@@ -486,25 +479,25 @@ mod tests {
     #[test]
     fn test_serialize_deserialize_row() {
         let cols = vec![
-            Column::new("id".into(), ColumnType::Number),
-            Column::new("name".into(), ColumnType::Varchar(8)),
-            Column::new("active".into(), ColumnType::Bool),
+            field_with_size("id", DataType::Float64, 8),
+            field_with_size("name", DataType::Utf8, 8),
+            field_with_size("active", DataType::Boolean, 1),
         ];
-        let col_refs: Vec<&Column> = cols.iter().collect();
+        let col_refs: Vec<&Field> = cols.iter().collect();
 
-        let row = Row(vec![
+        let row = Record(vec![
             num(42.0),
-            Value::Varchar("hello".into()),
-            Value::Bool(true),
+            Value::Utf8("hello".into()),
+            Value::Boolean(true),
         ]);
 
         let mut buf = vec![0u8; 17]; // 8 + 8 + 1
-        row.serialize(col_refs.clone(), &mut buf);
+        row.serialize(&col_refs, &mut buf);
 
-        let result = Row::deserialize(&col_refs, &buf);
+        let result = Record::deserialize(&col_refs, &buf);
         assert_eq!(result[0], num(42.0));
-        assert_eq!(result[1], Value::Varchar("hello".into()));
-        assert_eq!(result[2], Value::Bool(true));
+        assert_eq!(result[1], Value::Utf8("hello".into()));
+        assert_eq!(result[2], Value::Boolean(true));
     }
 
     #[test]
@@ -543,18 +536,18 @@ mod tests {
         let table = make_test_table();
         // 2 user columns: name, age
         let mut row1 = system_values(); row1[0] = num(1.0);
-        row1.extend([Value::Varchar("alice".into()), num(30.0)]);
+        row1.extend([Value::Utf8("alice".into()), num(30.0)]);
         let mut row2 = system_values(); row2[0] = num(2.0);
-        row2.extend([Value::Varchar("bob".into()), num(25.0)]);
+        row2.extend([Value::Utf8("bob".into()), num(25.0)]);
         let mut row3 = system_values(); row3[0] = num(3.0);
-        row3.extend([Value::Varchar("carol".into()), num(35.0)]);
+        row3.extend([Value::Utf8("carol".into()), num(35.0)]);
 
         let leaf = Node::Leaf {
             parent: None,
             cells: vec![
-                (num(1.0), Row(row1)),
-                (num(2.0), Row(row2)),
-                (num(3.0), Row(row3)),
+                (num(1.0), Record(row1)),
+                (num(2.0), Record(row2)),
+                (num(3.0), Record(row3)),
             ],
             next_leaf: None,
         };

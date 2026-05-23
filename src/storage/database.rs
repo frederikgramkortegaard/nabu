@@ -1,22 +1,25 @@
 use super::pager::Pager;
 use super::table::{Table, TableBuilder, TableMetadata};
+use crate::catalog::Catalog;
 use crate::constants::{MAX_COLUMNS_STR_LEN, MAX_TABLE_NAME_LEN};
 use crate::error::Error;
-use crate::magic::DatabaseHeader;
-use crate::types::{Column, ColumnType, Type, Value};
+use super::magic::DatabaseHeader;
+use crate::shared::{field_with_size, new_table_schema, parse_field, DataType, Field, FieldRef, SchemaRef};
+use std::sync::Arc;
+use crate::shared::Value;
 use indexmap::IndexMap;
 use log::debug;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 // System table columns
-fn system_table_columns() -> IndexMap<String, Column> {
+fn system_table_columns() -> IndexMap<String, Field> {
     IndexMap::from([
-        ("table_name".into(), Column::new("table_name".into(), ColumnType::Varchar(MAX_TABLE_NAME_LEN))),
-        ("root_page".into(), Column::new("root_page".into(), ColumnType::Number)),
+        ("table_name".into(), field_with_size("table_name", DataType::FixedSizeBinary(MAX_TABLE_NAME_LEN as i32), MAX_TABLE_NAME_LEN)),
+        ("root_page".into(), field_with_size("root_page", DataType::Float64, 8)),
         // @TODO: this is a little hacky, maybe this should be a key into another table or something.
-        ("columns".into(), Column::new("columns".into(), ColumnType::Varchar(MAX_COLUMNS_STR_LEN))),
-        ("primary_key_index".into(), Column::new("primary_key_index".into(), ColumnType::Number)),
+        ("columns".into(), field_with_size("columns", DataType::FixedSizeBinary(MAX_COLUMNS_STR_LEN as i32), MAX_COLUMNS_STR_LEN)),
+        ("primary_key_index".into(), field_with_size("primary_key_index", DataType::Float64, 8)),
     ])
 }
 
@@ -24,7 +27,18 @@ fn system_table_columns() -> IndexMap<String, Column> {
 pub struct Database {
     pub pager: Rc<RefCell<Pager>>,
     pub tables: IndexMap<String, Table>,
+    pub schemas: IndexMap<String, SchemaRef>,
     pub system_table: Table,
+}
+
+impl Catalog for Database {
+    fn get_schema(&self, name: &str) -> Option<SchemaRef> {
+        self.schemas.get(name).cloned()
+    }
+
+    fn get_schemas(&self) -> Vec<SchemaRef> {
+        self.schemas.values().cloned().collect()
+    }
 }
 
 impl Database {
@@ -63,43 +77,39 @@ impl Database {
 
                     let row = cursor.row()?;
                     debug!("Row: {:?}", row);
-                    let Value::Varchar(table_name) = row[0].clone() else {
+                    let Value::Utf8(table_name) = row[0].clone() else {
                         return Err(Error::TypeMismatch {
-                            expected: Type::Varchar(64),
-                            got: row[0].typ(),
+                            expected: DataType::Utf8,
+                            got: row[0].data_type(),
                         });
                     };
-                    let Value::Number(n) = row[1].clone() else {
+                    let Value::Float64(n) = row[1].clone() else {
                         return Err(Error::TypeMismatch {
-                            expected: Type::Number,
-                            got: row[1].typ(),
+                            expected: DataType::Float64,
+                            got: row[1].data_type(),
                         });
                     };
                     let table_page_num = n.into_inner() as usize;
 
-                    let Value::Varchar(stringified_columns) = row[2].clone() else {
+                    let Value::Utf8(stringified_columns) = row[2].clone() else {
                         return Err(Error::TypeMismatch {
-                            expected: Type::Varchar(1024),
-                            got: row[2].typ(),
+                            expected: DataType::Utf8,
+                            got: row[2].data_type(),
                         });
                     };
 
-                    let mut user_columns: IndexMap<String, Column> = IndexMap::new();
+                    let mut user_columns: IndexMap<String, Field> = IndexMap::new();
 
                     // Now we want to create the user columns, each cell represents one
-                    for column in stringified_columns.split(';') {
-                        let (name, type_str) = column
-                            .split_once(':')
-                            .ok_or(Error::CorruptedTree("Invalid column format".into()))?;
-
-                        let column_type: ColumnType = type_str.parse().map_err(|_| {
+                    // Format is name:type:size;name:type:size;...
+                    for column_str in stringified_columns.split(';') {
+                        let col = parse_field(column_str).map_err(|e| {
                             Error::CorruptedTree(format!(
-                                "Invalid Type found in system table: {:?}",
-                                type_str
+                                "Invalid column in system table: {}",
+                                e
                             ))
                         })?;
-                        user_columns
-                            .insert(name.to_string(), Column::new(name.to_string(), column_type));
+                        user_columns.insert(col.name().to_string(), col);
                     }
 
                     let table = Table::load(
@@ -114,9 +124,23 @@ impl Database {
                     cursor.advance()?;
                 }
 
+                // Build schemas from tables
+                let schemas: IndexMap<String, SchemaRef> = tables
+                    .iter()
+                    .map(|(name, table)| {
+                        let fields: Vec<FieldRef> = table
+                            .user_columns()
+                            .map(|c| Arc::new(c.clone()))
+                            .collect();
+                        let schema = new_table_schema(name, fields);
+                        (name.clone(), schema)
+                    })
+                    .collect();
+
                 Ok(Self {
                     pager,
                     tables,
+                    schemas,
                     system_table,
                 })
             }
@@ -143,6 +167,7 @@ impl Database {
                 Ok(Self {
                     pager,
                     tables,
+                    schemas: IndexMap::new(),
                     system_table,
                 })
             }
@@ -156,6 +181,7 @@ impl Database {
         Ok(Self {
             pager: pager.clone(),
             tables: IndexMap::new(),
+            schemas: IndexMap::new(),
             system_table: Table::from_columns(
                 "_system".into(),
                 system_table_columns(),
@@ -181,11 +207,18 @@ impl Database {
 
         let meta = TableMetadata::new(&table);
         let row = meta.to_row();
-        let key = Value::Varchar(table.name.clone()); // table_name is the key
+        let key = Value::Utf8(table.name.clone()); // table_name is the key
 
         self.system_table.insert(&key, &row)?;
         self.pager.borrow_mut().sync()?;
 
+        // Create schema for the query layer
+        let fields: Vec<FieldRef> = table
+            .user_columns()
+            .map(|c| Arc::new(c.clone()))
+            .collect();
+        let schema = new_table_schema(&table.name, fields);
+        self.schemas.insert(table.name.clone(), schema);
         self.tables.insert(table.name.clone(), table);
 
         Ok(())
@@ -195,7 +228,6 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ColumnType;
     use std::fs;
 
     #[test]
@@ -208,8 +240,8 @@ mod tests {
             let mut db = Database::new(path).unwrap();
             db.create_table(
                 TableBuilder::new("users")
-                    .column("id", ColumnType::Number)
-                    .column("name", ColumnType::Varchar(32)),
+                    .column("id", DataType::Float64, 8)
+                    .column("name", DataType::Utf8, 64),
             )
             .unwrap();
             assert!(db.table_exists("users"));
@@ -228,8 +260,8 @@ mod tests {
 
             let user_cols: Vec<_> = table.user_columns().collect();
             assert_eq!(user_cols.len(), 2);
-            assert_eq!(user_cols[0].name, "id");
-            assert_eq!(user_cols[1].name, "name");
+            assert_eq!(user_cols[0].name(), "id");
+            assert_eq!(user_cols[1].name(), "name");
         }
 
         let _ = fs::remove_file(path);

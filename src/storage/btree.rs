@@ -1,7 +1,9 @@
 use super::node::{HEADER_SIZE, Node};
 use super::pager::{PAGE_SIZE, Pager};
 use crate::error::Error;
-use crate::types::{Column, Row, Value};
+use crate::shared::{Field, FieldExt};
+use super::record::Record;
+use crate::shared::Value;
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -22,7 +24,7 @@ impl BTree {
         row_size: usize,
         key_size: usize,
         pager: Rc<RefCell<Pager>>,
-        cols: &[&Column],
+        cols: &[&Field],
     ) -> Self {
         let cell_size = key_size + row_size;
         let max_cells_per_leaf = (PAGE_SIZE - HEADER_SIZE) / cell_size;
@@ -75,7 +77,7 @@ impl BTree {
         }
     }
 
-    pub fn read_node(&self, page_num: usize, cols: &[&Column]) -> Result<Node, Error> {
+    pub fn read_node(&self, page_num: usize, cols: &[&Field]) -> Result<Node, Error> {
         let mut pager = self.pager.borrow_mut();
         let page = pager.get_page(page_num)?;
         Ok(Node::deserialize(
@@ -86,14 +88,14 @@ impl BTree {
         ))
     }
 
-    pub fn write_node(&self, page_num: usize, node: &Node, cols: &[&Column]) -> Result<(), Error> {
+    pub fn write_node(&self, page_num: usize, node: &Node, cols: &[&Field]) -> Result<(), Error> {
         let mut pager = self.pager.borrow_mut();
         let page = pager.get_page(page_num)?;
         node.serialize(&mut page.data, self.key_size, self.row_size, cols);
         Ok(())
     }
 
-    pub fn with_node<F, R>(&self, page_num: usize, cols: &[&Column], f: F) -> Result<R, Error>
+    pub fn with_node<F, R>(&self, page_num: usize, cols: &[&Field], f: F) -> Result<R, Error>
     where
         F: FnOnce(&Node) -> Result<R, Error>,
     {
@@ -101,7 +103,7 @@ impl BTree {
         f(&node)
     }
 
-    pub fn with_node_mut<F, R>(&self, page_num: usize, cols: &[&Column], f: F) -> Result<R, Error>
+    pub fn with_node_mut<F, R>(&self, page_num: usize, cols: &[&Field], f: F) -> Result<R, Error>
     where
         F: FnOnce(&mut Node) -> Result<R, Error>,
     {
@@ -115,7 +117,7 @@ impl BTree {
         &self,
         page_num: usize,
         key: &Value,
-        key_column: &Column,
+        key_column: &Field,
     ) -> Result<(usize, bool), Error> {
         let mut pager = self.pager.borrow_mut();
         let page = pager.get_page(page_num)?;
@@ -147,7 +149,7 @@ impl BTree {
         &self,
         page_num: usize,
         key: &Value,
-        key_column: &Column,
+        key_column: &Field,
     ) -> Result<usize, Error> {
         let mut pager = self.pager.borrow_mut();
         let page = pager.get_page(page_num)?;
@@ -175,8 +177,8 @@ impl BTree {
         &self,
         page_num: usize,
         key: &Value,
-        row: &Row,
-        cols: &[&Column],
+        row: &Record,
+        cols: &[&Field],
     ) -> Result<(), Error> {
         let node = self.read_node(page_num, cols)?;
         let Node::Leaf { cells, .. } = node else {
@@ -202,7 +204,7 @@ impl BTree {
         page_num: usize,
         split_key: &Value,
         new_child: usize,
-        cols: &[&Column],
+        cols: &[&Field],
     ) -> Result<(), Error> {
         let mut node = self.read_node(page_num, cols)?;
         let Node::Internal {
@@ -228,7 +230,7 @@ impl BTree {
         Ok(())
     }
 
-    pub fn split_leaf(&self, page_num: usize, cols: &[&Column]) -> Result<(Value, usize), Error> {
+    pub fn split_leaf(&self, page_num: usize, cols: &[&Field]) -> Result<(Value, usize), Error> {
         let mut node = self.read_node(page_num, cols)?;
         let Node::Leaf {
             ref mut cells,
@@ -262,7 +264,7 @@ impl BTree {
     pub fn split_internal(
         &self,
         page_num: usize,
-        cols: &[&Column],
+        cols: &[&Field],
     ) -> Result<(Value, usize), Error> {
         let mut node = self.read_node(page_num, cols)?;
         let Node::Internal {
@@ -306,8 +308,8 @@ impl BTree {
         &self,
         page_num: usize,
         key: &Value,
-        row: &Row,
-        cols: &[&Column],
+        row: &Record,
+        cols: &[&Field],
     ) -> Result<(Value, usize), Error> {
         let (split_key, new_page) = self.split_leaf(page_num, cols)?;
 
@@ -325,7 +327,7 @@ impl BTree {
         page_num: usize,
         key: &Value,
         new_child: usize,
-        cols: &[&Column],
+        cols: &[&Field],
     ) -> Result<(Value, usize), Error> {
         let (split_key, new_page) = self.split_internal(page_num, cols)?;
 
@@ -342,8 +344,8 @@ impl BTree {
         &self,
         page_num: usize,
         key: &Value,
-        values: &Row,
-        cols: &[&Column],
+        values: &Record,
+        cols: &[&Field],
     ) -> Result<Option<(Value, usize)>, Error> {
         let node = self.read_node(page_num, cols)?;
 
@@ -385,7 +387,7 @@ impl BTree {
         }
     }
 
-    pub fn insert(&self, key: &Value, row: &Row, cols: &[&Column]) -> Result<(), Error> {
+    pub fn insert(&self, key: &Value, row: &Record, cols: &[&Field]) -> Result<(), Error> {
         let old_root = self.root_page.get();
         if let Some((split_key, new_sibling)) = self.insert_recursive(old_root, key, row, cols)? {
             self.create_new_root(&split_key, old_root, new_sibling, cols)?;
@@ -398,7 +400,7 @@ impl BTree {
         split_key: &Value,
         left_child: usize,
         right_child: usize,
-        cols: &[&Column],
+        cols: &[&Field],
     ) -> Result<(), Error> {
         let new_root_page = self.pager.borrow_mut().alloc_page();
 
@@ -420,7 +422,7 @@ impl BTree {
         &self,
         page_num: usize,
         parent_page: usize,
-        cols: &[&Column],
+        cols: &[&Field],
     ) -> Result<(), Error> {
         let mut node = self.read_node(page_num, cols)?;
         match &mut node {
@@ -453,8 +455,8 @@ impl BTree {
         page_num: usize,
         cell_num: usize,
         key: &Value,
-        row: &Row,
-        cols: &[&Column],
+        row: &Record,
+        cols: &[&Field],
     ) -> Result<(), Error> {
         let mut pager = self.pager.borrow_mut();
         let page = pager.get_page(page_num)?;
@@ -462,7 +464,7 @@ impl BTree {
         let offset = HEADER_SIZE + cell_num * self.cell_size;
         key.serialize(&mut page.data[offset..], self.key_size);
 
-        row.serialize(cols.to_vec(), &mut page.data[offset + self.key_size..]);
+        row.serialize(cols, &mut page.data[offset + self.key_size..]);
         Ok(())
     }
 }

@@ -5,10 +5,11 @@ use ordered_float::OrderedFloat;
 
 #[derive(Debug, Default)]
 pub struct Clauses {
-    pub where_clause: Option<WhereClause>,
-    pub joins: Vec<JoinClause>,
-    pub limit: Option<LimitClause>,
-    pub orderby: Option<OrderByClause>,
+    pub filter: Option<Box<Expression>>,
+    pub joins: Vec<Join>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    pub order_by: Option<QualifiedIdentifier>,
 }
 
 /// The parser context that maintains state during parsing.
@@ -73,29 +74,36 @@ impl<'a> ParserContext<'a> {
         }
     }
 
-    fn parse_clauses(&mut self, allowed: &[ClauseKind]) -> Result<Clauses, Error> {
-        use std::collections::HashSet;
-        let allowed_set: HashSet<ClauseKind> = allowed.iter().copied().collect();
-        let mut clauses = Clauses::default();
-
-        macro_rules! check_allowed {
-            ($kind:expr) => {
-                if !allowed_set.contains(&$kind) {
-                    return Err(Error::Parse(format!(
-                        "Clause {:?} not allowed in this statement",
-                        $kind
-                    )));
-                }
-            };
+    /// Parses a potentially qualified identifier (e.g., `column` or `table.column`)
+    fn parse_qualified_identifier(&mut self) -> Option<QualifiedIdentifier> {
+        let first = self.consume_identifier()?;
+        match self.consume_optional(TokenType::Dot) {
+            Some(_) => {
+                let name = self.consume_identifier()?;
+                Some(QualifiedIdentifier {
+                    qualifier: Some(first),
+                    name,
+                })
+            }
+            None => Some(QualifiedIdentifier {
+                qualifier: None,
+                name: first,
+            }),
         }
+    }
+
+    fn parse_clauses(&mut self, allow_join: bool) -> Result<Clauses, Error> {
+        let mut clauses = Clauses::default();
 
         while let Some(token) = self.peek() {
             match &token.tag {
                 TokenType::Where => {
-                    check_allowed!(ClauseKind::Where);
+                    if clauses.filter.is_some() {
+                        return Err(Error::Parse("Duplicate WHERE clause".into()));
+                    }
                     self.consume();
                     let expr = self.parse_expression()?;
-                    clauses.where_clause = Some(WhereClause(Box::new(expr)));
+                    clauses.filter = Some(Box::new(expr));
                 }
                 TokenType::Join
                 | TokenType::InnerJoin
@@ -103,8 +111,10 @@ impl<'a> ParserContext<'a> {
                 | TokenType::RightOuterJoin
                 | TokenType::FullOuterJoin
                 | TokenType::CrossJoin => {
-                    check_allowed!(ClauseKind::Join);
-                    let t = token.tag.clone(); //@TODO hacky
+                    if !allow_join {
+                        return Err(Error::Parse("JOIN not allowed in this statement".into()));
+                    }
+                    let t = token.tag.clone();
                     self.consume();
 
                     let Some(table) = self.consume_identifier() else {
@@ -116,15 +126,17 @@ impl<'a> ParserContext<'a> {
                     let on = self.parse_expression()?;
 
                     let kind = JoinKind::from_token(&t)
-                        .ok_or_else(|| Error::Parse(format!("unknown join kind")))?;
-                    clauses.joins.push(JoinClause {
+                        .ok_or_else(|| Error::Parse("unknown join kind".into()))?;
+                    clauses.joins.push(Join {
                         kind,
                         table,
                         on: Box::new(on),
                     });
                 }
                 TokenType::Limit => {
-                    check_allowed!(ClauseKind::Limit);
+                    if clauses.limit.is_some() {
+                        return Err(Error::Parse("Duplicate LIMIT clause".into()));
+                    }
                     self.consume();
 
                     let limit = self
@@ -133,37 +145,27 @@ impl<'a> ParserContext<'a> {
                         .parse::<usize>()
                         .map_err(|_| Error::Parse("LIMIT should be a valid integer".into()))?;
 
-                    let mut offset: usize = 0;
                     if self.consume_optional(TokenType::Comma).is_some() {
-                        offset = self
+                        let offset = self
                             .consume_assert(TokenType::Number, "Expected offset number".into())?
                             .lexeme
                             .parse::<usize>()
                             .map_err(|_| Error::Parse("OFFSET should be a valid integer".into()))?;
+                        clauses.offset = Some(offset);
                     }
 
-                    clauses.limit = Some(LimitClause { limit, offset })
+                    clauses.limit = Some(limit);
                 }
                 TokenType::OrderBy => {
-                    check_allowed!(ClauseKind::OrderBy);
+                    if clauses.order_by.is_some() {
+                        return Err(Error::Parse("Duplicate ORDER BY clause".into()));
+                    }
                     self.consume();
 
-                    let first = self
-                        .consume_assert(
-                            TokenType::Identifier,
-                            "Expected column identifier after ORDER BY".into(),
-                        )?
-                        .lexeme;
-                    let column = match self.consume_optional(TokenType::Dot) {
-                        Some(_) => {
-                            let name = self
-                                .consume_assert(TokenType::Identifier, "Expected column name".into())?
-                                .lexeme;
-                            QualifiedIdentifier { qualifier: Some(first), name }
-                        }
-                        None => QualifiedIdentifier { qualifier: None, name: first },
-                    };
-                    clauses.orderby = Some(OrderByClause { column })
+                    let column = self
+                        .parse_qualified_identifier()
+                        .ok_or_else(|| Error::Parse("Expected column after ORDER BY".into()))?;
+                    clauses.order_by = Some(column);
                 }
                 _ => break,
             }
@@ -189,25 +191,25 @@ impl<'a> ParserContext<'a> {
                     let value = token.lexeme.parse::<f64>().map_err(|_| {
                         Error::Parse(format!("Failed to parse number: {}", token.lexeme))
                     })?;
-                    Ok(Value::Number(OrderedFloat(value)))
+                    Ok(Value::Float64(OrderedFloat(value)))
                 }
 
                 TokenType::String => {
                     let val = self.consume().expect("token verified by peek");
-                    Ok(Value::Varchar(val.lexeme))
+                    Ok(Value::Utf8(val.lexeme))
                 }
 
                 TokenType::Identifier => {
                     let val = self.consume().expect("token verified by peek");
-                    Ok(Value::Varchar(val.lexeme))
+                    Ok(Value::Utf8(val.lexeme))
                 }
                 TokenType::True => {
                     self.consume();
-                    Ok(Value::Bool(true))
+                    Ok(Value::Boolean(true))
                 }
                 TokenType::False => {
                     self.consume();
-                    Ok(Value::Bool(false))
+                    Ok(Value::Boolean(false))
                 }
 
                 _ => Err(Error::Parse(format!(
@@ -282,19 +284,19 @@ impl<'a> ParserContext<'a> {
                     let value = tok.lexeme.parse::<f64>().map_err(|_| {
                         Error::Parse(format!("Failed to parse number: {}", tok.lexeme))
                     })?;
-                    Ok(Expression::Literal(Value::Number(OrderedFloat(value))))
+                    Ok(Expression::Literal(Value::Float64(OrderedFloat(value))))
                 }
                 TokenType::String => {
                     let tok = self.consume().unwrap();
-                    Ok(Expression::Literal(Value::Varchar(tok.lexeme)))
+                    Ok(Expression::Literal(Value::Utf8(tok.lexeme)))
                 }
                 TokenType::True => {
                     self.consume();
-                    Ok(Expression::Literal(Value::Bool(true)))
+                    Ok(Expression::Literal(Value::Boolean(true)))
                 }
                 TokenType::False => {
                     self.consume();
-                    Ok(Expression::Literal(Value::Bool(false)))
+                    Ok(Expression::Literal(Value::Boolean(false)))
                 }
                 TokenType::Identifier => {
                     let tok = self.consume().unwrap();
@@ -363,14 +365,17 @@ impl<'a> ParserContext<'a> {
                     self.consume_optional(TokenType::LParen);
 
                     let mut columns = vec![];
-                    while let Some(name) = self.consume_identifier() {
-                        columns.push(name);
+                    while let Some(col) = self.parse_qualified_identifier() {
+                        columns.push(col);
                         self.consume_optional(TokenType::Comma);
                     }
 
                     // @TODO not a very good way of handling * but its okay
                     if columns.is_empty() && self.consume_optional(TokenType::Star).is_some() {
-                        columns.push("*".into());
+                        columns.push(QualifiedIdentifier {
+                            qualifier: None,
+                            name: "*".into(),
+                        });
                     }
 
                     self.consume_optional(TokenType::RParen);
@@ -380,21 +385,17 @@ impl<'a> ParserContext<'a> {
                         Error::Parse("Expected table name after FROM".to_string())
                     })?;
 
-                    let clauses = self.parse_clauses(&[
-                        ClauseKind::Where,
-                        ClauseKind::Join,
-                        ClauseKind::Limit,
-                        ClauseKind::OrderBy,
-                    ])?;
+                    let clauses = self.parse_clauses(true)?;
 
-                    Ok(Statement::Select(SelectStatement {
-                        columns,
+                    Ok(Statement::Select {
                         table,
+                        columns,
                         joins: clauses.joins,
-                        where_clause: clauses.where_clause,
-                        limit_clause: clauses.limit,
-                        orderby_clause: clauses.orderby,
-                    }))
+                        filter: clauses.filter,
+                        limit: clauses.limit,
+                        offset: clauses.offset,
+                        order_by: clauses.order_by,
+                    })
                 }
 
                 TokenType::Delete => {
@@ -407,12 +408,12 @@ impl<'a> ParserContext<'a> {
                         Error::Parse("Expected table name after FROM".to_string())
                     })?;
 
-                    let clauses = self.parse_clauses(&[ClauseKind::Where])?;
+                    let clauses = self.parse_clauses(false)?;
 
-                    Ok(Statement::Delete(DeleteStatement {
+                    Ok(Statement::Delete {
                         table,
-                        where_clause: clauses.where_clause,
-                    }))
+                        filter: clauses.filter,
+                    })
                 }
                 TokenType::Insert => {
                     self.consume();
@@ -421,15 +422,15 @@ impl<'a> ParserContext<'a> {
                         TokenType::Into,
                         "Expected 'INTO' after 'VALUES' during 'INSERT' statement".to_string(),
                     )?;
-                    let table_name = match self.parse_primary() {
-                        Ok(Value::Varchar(name)) => Ok(name),
+                    let table = match self.parse_primary() {
+                        Ok(Value::Utf8(name)) => Ok(name),
                         Err(e) => Err(e),
                         _ => Err(Error::Parse(
                             "Failed to parse 'TABLE' name in 'INSERT' statement".to_string(),
                         )),
                     }?;
 
-                    Ok(Statement::Insert(InsertStatement { values, table_name }))
+                    Ok(Statement::Insert { table, values })
                 }
 
                 _ => Err(Error::Parse(format!("Unexpected token: {:?}", token.tag))),
@@ -453,7 +454,7 @@ impl<'a> ParserContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sql::lexer::LexerContext;
+    use crate::frontend::lexer::LexerContext;
 
     fn parse_expr(input: &str) -> Result<Expression, Error> {
         let tokens = LexerContext::lex(input).unwrap();
@@ -468,16 +469,16 @@ mod tests {
     fn test_parse_insert() {
         let tokens = LexerContext::lex("INSERT (1, 2) INTO users").unwrap();
         let stmt = ParserContext::parse(&tokens).unwrap();
-        assert!(matches!(stmt, Statement::Insert(_)));
+        assert!(matches!(stmt, Statement::Insert { table: _, values: _ }));
     }
 
     #[test]
     fn test_parse_insert_with_string() {
         let tokens = LexerContext::lex("INSERT (1, \"hello\") INTO users").unwrap();
         let stmt = ParserContext::parse(&tokens).unwrap();
-        if let Statement::Insert(insert) = stmt {
-            assert_eq!(insert.values.len(), 2);
-            assert_eq!(insert.table_name, "users");
+        if let Statement::Insert { table, values } = stmt {
+            assert_eq!(values.len(), 2);
+            assert_eq!(table, "users");
         } else {
             panic!("Expected Insert statement");
         }
@@ -493,13 +494,13 @@ mod tests {
     #[test]
     fn test_parse_expr_number() {
         let expr = parse_expr("42").unwrap();
-        assert!(matches!(expr, Expression::Literal(Value::Number(n)) if n == 42.0));
+        assert!(matches!(expr, Expression::Literal(Value::Float64(n)) if n == 42.0));
     }
 
     #[test]
     fn test_parse_expr_string() {
         let expr = parse_expr("\"hello\"").unwrap();
-        assert!(matches!(expr, Expression::Literal(Value::Varchar(s)) if s == "hello"));
+        assert!(matches!(expr, Expression::Literal(Value::Utf8(s)) if s == "hello"));
     }
 
     #[test]
@@ -539,7 +540,7 @@ mod tests {
         let expr = parse_expr("1 + 2 * 3").unwrap();
         if let Expression::BinaryOp { op, lhs, rhs } = expr {
             assert!(matches!(op, Operator::Add));
-            assert!(matches!(*lhs, Expression::Literal(Value::Number(n)) if n == 1.0));
+            assert!(matches!(*lhs, Expression::Literal(Value::Float64(n)) if n == 1.0));
             assert!(matches!(
                 *rhs,
                 Expression::BinaryOp {
@@ -565,7 +566,7 @@ mod tests {
                     ..
                 }
             ));
-            assert!(matches!(*rhs, Expression::Literal(Value::Number(n)) if n == 3.0));
+            assert!(matches!(*rhs, Expression::Literal(Value::Float64(n)) if n == 3.0));
         } else {
             panic!("Expected BinaryOp");
         }
