@@ -31,6 +31,9 @@ pub enum TokenType {
     Limit,
     OrderBy,
 
+    // Assignment
+    Assign,       // =
+
     // Delimiters
     LParen,
     RParen,
@@ -172,6 +175,7 @@ impl LexerContext {
             '/' => TokenType::Slash,
             '<' => TokenType::Less,
             '>' => TokenType::Greater,
+            '=' => TokenType::Assign,
             _ => return false,
         };
         self.push_token(token_type, c.to_string());

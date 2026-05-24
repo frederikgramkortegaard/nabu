@@ -62,7 +62,8 @@ pub enum Expression {
 pub struct Join {
     pub kind: JoinKind,
     pub table: String,
-    pub on: Box<Expression>,
+    pub left_col: QualifiedIdentifier,
+    pub right_col: QualifiedIdentifier,
 }
 
 #[derive(Debug)]

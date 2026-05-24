@@ -45,12 +45,32 @@ pub fn resolve_join(join: Join, schemas: &[SchemaRef]) -> Result<ResolvedJoin, E
         .cloned()
         .ok_or_else(|| Error::TableNotFound(join.table.clone()))?;
 
-    let res_expr = resolve_expression(join.on, schemas)?;
+    // Require qualifiers on join columns
+    let left_qualifier = join.left_col.qualifier.as_ref()
+        .ok_or_else(|| Error::Parse("JOIN ON columns must be qualified (table.column)".into()))?;
+    let right_qualifier = join.right_col.qualifier.as_ref()
+        .ok_or_else(|| Error::Parse("JOIN ON columns must be qualified (table.column)".into()))?;
+
+    let mut left_col = resolve_column(&join.left_col, schemas)?;
+    let mut right_col = resolve_column(&join.right_col, schemas)?;
+
+    // Ensure left_col is from the left side (not the table being joined)
+    // and right_col is from the right side (the table being joined)
+    let left_is_from_join_table = left_qualifier == &join.table;
+    let right_is_from_join_table = right_qualifier == &join.table;
+
+    match (left_is_from_join_table, right_is_from_join_table) {
+        (true, false) => std::mem::swap(&mut left_col, &mut right_col),
+        (false, true) => {} // already correct
+        (true, true) => return Err(Error::Parse("JOIN ON must reference columns from both tables".into())),
+        (false, false) => return Err(Error::Parse("JOIN ON must reference a column from the joined table".into())),
+    }
 
     Ok(ResolvedJoin {
         kind: join.kind,
         schema,
-        on: res_expr,
+        left_col,
+        right_col,
     })
 }
 

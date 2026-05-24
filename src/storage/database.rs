@@ -3,6 +3,7 @@ use super::table::{Table, TableBuilder, TableMetadata};
 use crate::catalog::Catalog;
 use crate::constants::{MAX_COLUMNS_STR_LEN, MAX_TABLE_NAME_LEN};
 use crate::error::Error;
+use crate::provider::TableProvider;
 use super::magic::DatabaseHeader;
 use crate::shared::{field_with_size, new_table_schema, parse_field, DataType, Field, FieldRef, SchemaRef};
 use std::sync::Arc;
@@ -26,7 +27,7 @@ fn system_table_columns() -> IndexMap<String, Field> {
 #[derive(Debug)]
 pub struct Database {
     pub pager: Rc<RefCell<Pager>>,
-    pub tables: IndexMap<String, Table>,
+    pub tables: IndexMap<String, Arc<Table>>,
     pub schemas: IndexMap<String, SchemaRef>,
     pub system_table: Table,
 }
@@ -39,12 +40,16 @@ impl Catalog for Database {
     fn get_schemas(&self) -> Vec<SchemaRef> {
         self.schemas.values().cloned().collect()
     }
+
+    fn table(&self, name: &str) -> Option<Arc<dyn TableProvider>> {
+        self.tables.get(name).map(|t| t.clone() as Arc<dyn TableProvider>)
+    }
 }
 
 impl Database {
     pub fn new(file_path: &str) -> Result<Self, Error> {
         let pager = Rc::new(RefCell::new(Pager::new(file_path)?));
-        let mut tables: IndexMap<String, Table> = IndexMap::new();
+        let mut tables: IndexMap<String, Arc<Table>> = IndexMap::new();
 
         let header = {
             let mut p = pager.borrow_mut();
@@ -112,13 +117,13 @@ impl Database {
                         user_columns.insert(col.name().to_string(), col);
                     }
 
-                    let table = Table::load(
+                    let table = Arc::new(Table::load(
                         table_name.clone(),
                         user_columns,
                         table_page_num,
                         pager.clone(),
                         false,
-                    );
+                    ));
                     debug!("Loaded table: {:?}", table.name);
                     tables.insert(table_name, table);
                     cursor.advance()?;
@@ -192,7 +197,7 @@ impl Database {
     }
 
     pub fn get_table(&self, name: &str) -> Option<&Table> {
-        self.tables.get(name)
+        self.tables.get(name).map(|t| t.as_ref())
     }
 
     pub fn table_exists(&self, name: &str) -> bool {
@@ -219,7 +224,7 @@ impl Database {
             .collect();
         let schema = new_table_schema(&table.name, fields);
         self.schemas.insert(table.name.clone(), schema);
-        self.tables.insert(table.name.clone(), table);
+        self.tables.insert(table.name.clone(), Arc::new(table));
 
         Ok(())
     }

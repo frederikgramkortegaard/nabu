@@ -1,9 +1,13 @@
 mod analyzer;
+mod logical;
+mod plans;
 mod resolved;
 
-pub use analyzer::resolve;
-pub use resolved::*;
 pub use crate::shared::Value;
+pub use analyzer::resolve;
+pub use logical::structure;
+pub use plans::*;
+pub use resolved::*;
 
 #[derive(Debug)]
 pub enum QueryResult {

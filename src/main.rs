@@ -16,8 +16,10 @@ use storage::{Database, TableBuilder};
 fn run_query(db: &Database, sql: &str) -> Result<(), Error> {
     let tokens = LexerContext::lex(sql)?;
     let ast = ParserContext::parse(&tokens)?;
-    let _resolved = query::resolve(ast, db)?;
-    // TODO: execute resolved statement
+    let resolved = query::resolve(ast, db)?;
+    let plan = query::structure(resolved)?;
+    println!("{:?}", plan);
+    // TODO: execute logical plan
     Ok(())
 }
 

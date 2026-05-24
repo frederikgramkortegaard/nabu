@@ -4,13 +4,17 @@ use super::node::Node;
 use super::pager::Pager;
 use crate::constants::{MAX_COLUMNS_STR_LEN, MAX_TABLE_NAME_LEN, NULL_BITMAP_SIZE};
 use crate::error::Error;
-use crate::shared::{field_with_size, parse_field, serialize_field, DataType, Field, FieldExt};
+use crate::provider::TableProvider;
+use crate::shared::{field_with_size, new_table_schema, parse_field, serialize_field, DataType, Field, FieldExt, FieldRef, SchemaRef};
 use super::record::Record;
 use crate::shared::Value;
+use arrow::array::{ArrayRef, Float64Builder, StringBuilder, BooleanBuilder};
+use arrow::record_batch::RecordBatch;
 use indexmap::IndexMap;
 use ordered_float::OrderedFloat;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// System columns prepended to every user table
 fn system_columns() -> IndexMap<String, Field> {
@@ -391,6 +395,99 @@ impl Table {
             primary_key_index: 0,
             btree,
         }
+    }
+}
+
+impl TableProvider for Table {
+    fn schema(&self) -> SchemaRef {
+        let fields: Vec<FieldRef> = self
+            .user_columns()
+            .map(|f| Arc::new(f.clone()))
+            .collect();
+        new_table_schema(&self.name, fields)
+    }
+
+    fn scan(&self, projection: Option<&[usize]>) -> Result<Box<dyn Iterator<Item = Result<RecordBatch, Error>> + '_>, Error> {
+        let schema = self.schema();
+        let user_col_count = self.user_columns().count();
+
+        // Determine which columns to include
+        let proj_indices: Vec<usize> = projection
+            .map(|p| p.to_vec())
+            .unwrap_or_else(|| (0..user_col_count).collect());
+
+        // Collect all rows (for now, single batch)
+        let mut cursor = self.start()?;
+        let mut rows: Vec<Record> = Vec::new();
+
+        while !cursor.eot {
+            rows.push(cursor.row()?);
+            cursor.advance()?;
+        }
+
+        // Build columnar arrays from rows
+        let num_system_cols = system_columns().len();
+        let projected_schema = if projection.is_some() {
+            let fields: Vec<FieldRef> = proj_indices
+                .iter()
+                .map(|&i| Arc::new(schema.field(i).clone()))
+                .collect();
+            Arc::new(arrow::datatypes::Schema::new(fields))
+        } else {
+            schema.clone()
+        };
+
+        let arrays: Result<Vec<ArrayRef>, Error> = proj_indices
+            .iter()
+            .map(|&col_idx| {
+                let actual_idx = num_system_cols + col_idx;
+                let field = self.columns.get_index(actual_idx).unwrap().1;
+                build_array(&rows, actual_idx, field)
+            })
+            .collect();
+
+        let batch = RecordBatch::try_new(projected_schema, arrays?)
+            .map_err(|e| Error::Arrow(e.to_string()))?;
+
+        Ok(Box::new(std::iter::once(Ok(batch))))
+    }
+}
+
+fn build_array(rows: &[Record], col_idx: usize, field: &Field) -> Result<ArrayRef, Error> {
+    match field.data_type() {
+        DataType::Float64 => {
+            let mut builder = Float64Builder::with_capacity(rows.len());
+            for row in rows {
+                if let Value::Float64(v) = &row[col_idx] {
+                    builder.append_value(v.into_inner());
+                } else {
+                    builder.append_null();
+                }
+            }
+            Ok(Arc::new(builder.finish()))
+        }
+        DataType::Utf8 | DataType::FixedSizeBinary(_) => {
+            let mut builder = StringBuilder::with_capacity(rows.len(), rows.len() * 32);
+            for row in rows {
+                match &row[col_idx] {
+                    Value::Utf8(s) => builder.append_value(s),
+                    _ => builder.append_null(),
+                }
+            }
+            Ok(Arc::new(builder.finish()))
+        }
+        DataType::Boolean => {
+            let mut builder = BooleanBuilder::with_capacity(rows.len());
+            for row in rows {
+                if let Value::Boolean(v) = &row[col_idx] {
+                    builder.append_value(*v);
+                } else {
+                    builder.append_null();
+                }
+            }
+            Ok(Arc::new(builder.finish()))
+        }
+        dt => Err(Error::UnsupportedType(format!("{:?}", dt))),
     }
 }
 

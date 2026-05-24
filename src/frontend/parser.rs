@@ -123,14 +123,23 @@ impl<'a> ParserContext<'a> {
 
                     self.consume_assert(TokenType::On, "Expected ON after JOIN".into())?;
 
-                    let on = self.parse_expression()?;
+                    let left_col = self
+                        .parse_qualified_identifier()
+                        .ok_or_else(|| Error::Parse("Expected column in JOIN ON".into()))?;
+
+                    self.consume_assert(TokenType::Assign, "Expected '=' in JOIN ON".into())?;
+
+                    let right_col = self
+                        .parse_qualified_identifier()
+                        .ok_or_else(|| Error::Parse("Expected column after '=' in JOIN ON".into()))?;
 
                     let kind = JoinKind::from_token(&t)
                         .ok_or_else(|| Error::Parse("unknown join kind".into()))?;
                     clauses.joins.push(Join {
                         kind,
                         table,
-                        on: Box::new(on),
+                        left_col,
+                        right_col,
                     });
                 }
                 TokenType::Limit => {

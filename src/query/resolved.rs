@@ -38,5 +38,6 @@ pub enum ResolvedStatement {
 pub struct ResolvedJoin {
     pub kind: JoinKind,
     pub schema: SchemaRef,
-    pub on: ResolvedExpression,
+    pub left_col: FieldRef,
+    pub right_col: FieldRef,
 }

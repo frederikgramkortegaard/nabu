@@ -44,6 +44,10 @@ pub enum Error {
     // Execution
     ColumnNotInRow(String),
     DivisionByZero,
+
+    // Arrow
+    Arrow(String),
+    UnsupportedType(String),
 }
 
 impl From<std::io::Error> for Error {
